@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: automation-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "automation.labels" . | nindent 4 }}
+data:
+  # ── API ─────────────────────────────────────────────────────────────────────
+  NODE_ENV: "production"
+  PORT: "{{ .Values.api.port }}"
+  HOST: "0.0.0.0"
+  CORS_ORIGIN: "https://{{ .Values.ingress.host }}"
+  DOMAIN: "{{ .Values.ingress.host }}"
+  DASHBOARD_URL: "https://{{ .Values.ingress.host }}"
+  API_URL: "https://{{ .Values.ingress.host }}/api"
+
+  # ── n8n ─────────────────────────────────────────────────────────────────────
+  N8N_HOST: "0.0.0.0"
+  N8N_PORT: "{{ .Values.n8n.port }}"
+  N8N_PROTOCOL: "http"
+  N8N_BASIC_AUTH_ACTIVE: "false"
+  EXECUTIONS_MODE: "queue"
+  # Redis service name inside the cluster
+  QUEUE_BULL_REDIS_HOST: "automation-redis"
+  QUEUE_BULL_REDIS_PORT: "{{ .Values.redis.port }}"
+  EXECUTIONS_CONCURRENCY_LIMIT: "{{ .Values.n8n.executionsConcurrencyLimit }}"
+  N8N_DIAGNOSTICS_ENABLED: "false"
+  N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+  N8N_USER_FOLDER: "/home/node/.n8n"
+  # n8n calls API internal routes via cluster DNS
+  N8N_API_URL: "http://automation-api:{{ .Values.api.port }}/api/v1"

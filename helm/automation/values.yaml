@@ -1,0 +1,119 @@
+# ── Default values for the automation Helm chart ─────────────────────────────
+# Override per environment by passing --values values-prod.yaml or --set key=val
+
+# ── Global ────────────────────────────────────────────────────────────────────
+global:
+  # Image registry prefix — e.g. ghcr.io/your-org or docker.io/youruser
+  registry: ghcr.io/your-org
+  # Image tag — overridden by Jenkins via --set global.imageTag=$BUILD_TAG
+  imageTag: latest
+  # K8s namespace
+  namespace: automation
+
+# ── Ingress ───────────────────────────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: nginx                 # must match your ingress controller class
+  host: app.example.com            # override in values-prod.yaml
+  tls:
+    enabled: false                 # set true in prod, provide secretName
+    secretName: automation-tls
+
+# ── API (Fastify) ─────────────────────────────────────────────────────────────
+api:
+  image:
+    repository: ai-video-automation-api
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  port: 3001
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  livenessProbe:
+    path: /health
+    initialDelaySeconds: 15
+    periodSeconds: 30
+  readinessProbe:
+    path: /health
+    initialDelaySeconds: 10
+    periodSeconds: 15
+
+# ── Dashboard (Next.js) ───────────────────────────────────────────────────────
+dashboard:
+  image:
+    repository: ai-video-automation-dashboard
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  port: 3000
+  # Build-time public env vars baked into Next.js bundle
+  # These must match what the images were built with
+  buildArgs:
+    nextPublicSupabaseUrl: ""        # set in values-prod.yaml or via --set
+    nextPublicSupabaseAnonKey: ""
+    nextPublicApiBaseUrl: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  livenessProbe:
+    path: /api/health
+    initialDelaySeconds: 20
+    periodSeconds: 30
+  readinessProbe:
+    path: /api/health
+    initialDelaySeconds: 15
+    periodSeconds: 15
+
+# ── n8n ───────────────────────────────────────────────────────────────────────
+n8n:
+  image:
+    repository: n8nio/n8n
+    tag: "1.48.0"                  # pinned — do not use latest
+    pullPolicy: IfNotPresent
+  replicaCount: 1                  # n8n must be single-instance (SQLite/queue)
+  port: 5678
+  executionsConcurrencyLimit: "10"
+  persistence:
+    enabled: true
+    storageClass: ""               # "" = cluster default; set e.g. "standard" or "gp2"
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+# ── Redis ─────────────────────────────────────────────────────────────────────
+redis:
+  image:
+    repository: redis
+    tag: "7.2.5-alpine"            # pinned
+    pullPolicy: IfNotPresent
+  port: 6379
+  maxmemory: "256mb"
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 320Mi
+
+# ── Secret reference ──────────────────────────────────────────────────────────
+# The chart reads from a pre-existing K8s Secret named below.
+# Create it with: kubectl create secret generic automation-secrets -n automation --from-env-file=.env.prod
+# See README for the full list of required keys.
+existingSecret: automation-secrets

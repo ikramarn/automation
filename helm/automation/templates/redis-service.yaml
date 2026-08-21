@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: automation-redis
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "automation.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+  annotations:
+    automation/internal-only: "true"
+spec:
+  # ClusterIP only — Redis must never be exposed externally
+  type: ClusterIP
+  selector:
+    app: automation-redis
+  ports:
+    - name: redis
+      port: {{ .Values.redis.port }}
+      targetPort: redis
+      protocol: TCP

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: automation-dashboard
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "automation.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+spec:
+  type: ClusterIP
+  selector:
+    app: automation-dashboard
+  ports:
+    - name: http
+      port: {{ .Values.dashboard.port }}
+      targetPort: http
+      protocol: TCP

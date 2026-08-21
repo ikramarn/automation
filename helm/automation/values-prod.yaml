@@ -1,0 +1,43 @@
+# ── Production overrides ──────────────────────────────────────────────────────
+# Applied on top of values.yaml:
+#   helm upgrade --install automation ./helm/automation \
+#     -n automation \
+#     -f helm/automation/values-prod.yaml \
+#     --set global.imageTag=$BUILD_TAG
+#
+# Do NOT commit real secrets here — secrets live in the K8s Secret object.
+
+global:
+  registry: ghcr.io/your-org      # replace with your actual registry
+  imageTag: latest                 # overridden by Jenkins --set global.imageTag=
+
+ingress:
+  enabled: true
+  className: nginx
+  host: app.yourdomain.com         # replace with your real domain
+  tls:
+    enabled: true
+    secretName: automation-tls     # created by cert-manager or manually
+
+api:
+  replicaCount: 2
+
+dashboard:
+  replicaCount: 2
+  # These must match the values the dashboard image was built with
+  buildArgs:
+    nextPublicSupabaseUrl: "https://your-project-ref.supabase.co"
+    nextPublicSupabaseAnonKey: "your-anon-key"
+    nextPublicApiBaseUrl: "https://app.yourdomain.com/api"
+
+n8n:
+  persistence:
+    enabled: true
+    storageClass: "standard"       # adjust to your cluster's storage class
+    size: 10Gi
+
+redis:
+  persistence:
+    enabled: true
+    storageClass: "standard"
+    size: 5Gi

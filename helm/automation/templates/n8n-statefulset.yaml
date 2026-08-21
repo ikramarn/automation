@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: automation-n8n
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "automation.labels" . | nindent 4 }}
+    app.kubernetes.io/component: n8n
+spec:
+  # n8n must be single-instance — it uses SQLite which cannot be shared
+  replicas: 1
+  serviceName: automation-n8n
+  selector:
+    matchLabels:
+      app: automation-n8n
+  template:
+    metadata:
+      labels:
+        app: automation-n8n
+        app.kubernetes.io/component: n8n
+    spec:
+      # n8n must NEVER be reachable from ingress — internal only
+      containers:
+        - name: n8n
+          image: "{{ .Values.n8n.image.repository }}:{{ .Values.n8n.image.tag }}"
+          imagePullPolicy: {{ .Values.n8n.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.n8n.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: automation-config
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.n8n.port }}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.n8n.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.n8n.resources | nindent 12 }}
+          volumeMounts:
+            - name: n8n-data
+              mountPath: /home/node/.n8n
+            # Workflow JSONs are shipped in the image or via a separate volume
+  {{- if .Values.n8n.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: n8n-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.n8n.persistence.storageClass }}
+        storageClassName: {{ .Values.n8n.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.n8n.persistence.size }}
+  {{- end }}
