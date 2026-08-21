@@ -1,0 +1,193 @@
+{
+  "name": "audit-migration-job",
+  "active": false,
+  "nodes": [
+    {
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {}
+    },
+    {
+      "id": "check-audit-approved",
+      "name": "Check Audit Approved",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.INTERNAL_API_URL }}/internal/platform-audit/status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.N8N_SERVICE_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "audit-approved-gate",
+      "name": "Audit Approved Gate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "audit-approved-check",
+              "leftValue": "={{ $json.audit_approved }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "mark-pipelines-for-update",
+      "name": "Mark Pipelines For Update",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, -80],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.INTERNAL_API_URL }}/internal/platform-audit/migrate",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.N8N_SERVICE_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ triggered_at: new Date().toISOString(), deadline_hours: 24, platform_flag: 'audit_migration_pending' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          }
+        }
+      },
+      "continueOnFail": false
+    },
+    {
+      "id": "log-migration-result",
+      "name": "Log Migration Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, -80],
+      "parameters": {
+        "jsCode": "// Log migration outcome for operator visibility (Req 17.7)\nconst result = $input.first().json;\nconst pipelinesUpdated = result.pipelines_updated ?? result.count ?? 'unknown';\nconsole.log(\n  `[audit-migration-job] Migration job completed. ` +\n  `Pipelines flagged for update within 24h: ${pipelinesUpdated}. ` +\n  `Triggered at: ${new Date().toISOString()}`\n);\nreturn [{ json: { success: true, pipelines_updated: pipelinesUpdated, completed_at: new Date().toISOString() } }];"
+      }
+    },
+    {
+      "id": "audit-not-approved",
+      "name": "Audit Not Approved",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 80],
+      "parameters": {
+        "jsCode": "// Audit has not been approved — operator must set audit_approved = true first.\nconsole.warn('[audit-migration-job] Workflow triggered but platform_audit_status.audit_approved is not true. No migration performed.');\nreturn [{ json: { success: false, reason: 'audit_not_approved', checked_at: new Date().toISOString() } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Audit Approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Audit Approved": {
+      "main": [
+        [
+          {
+            "node": "Audit Approved Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Approved Gate": {
+      "main": [
+        [
+          {
+            "node": "Mark Pipelines For Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Audit Not Approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Pipelines For Update": {
+      "main": [
+        [
+          {
+            "node": "Log Migration Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "versionId": "1",
+  "triggerCount": 0,
+  "tags": [
+    {
+      "name": "platform-ops"
+    }
+  ]
+}

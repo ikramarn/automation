@@ -1,0 +1,234 @@
+name: CI
+
+# ── Triggers ──────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    # Run on all branches targeted at main
+    branches:
+      - main
+
+# Cancel in-progress runs on the same ref when a new commit is pushed,
+# keeping the queue lean while still running the full pipeline.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+  # Minimal environment so unit/property tests can run without real credentials.
+  # Tests must use mocks or conditional skips for anything that calls external APIs.
+  NODE_ENV: test
+
+jobs:
+
+  # ── Job 1: Lint ─────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          # Cache npm dependencies keyed on both lockfiles so cache busts
+          # when either the api or dashboard dependencies change.
+          cache: npm
+          cache-dependency-path: |
+            api/package-lock.json
+            dashboard/package-lock.json
+
+      # Install API dependencies
+      - name: Install API dependencies
+        run: npm ci
+        working-directory: api
+
+      # Install Dashboard dependencies
+      - name: Install Dashboard dependencies
+        run: npm ci
+        working-directory: dashboard
+
+      # Run ESLint on the Fastify API (TypeScript)
+      - name: Lint — API (ESLint)
+        run: npm run lint
+        working-directory: api
+
+      # Run ESLint on the Next.js Dashboard (next lint includes TypeScript checks)
+      - name: Lint — Dashboard (ESLint / next lint)
+        run: npm run lint
+        working-directory: dashboard
+
+      # TypeScript type-check the Dashboard (next lint doesn't catch all type errors)
+      - name: Type-check — Dashboard
+        run: npm run type-check
+        working-directory: dashboard
+
+  # ── Job 2: Unit Tests ────────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint               # Only run if lint passes (fast-fail for obvious errors)
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            api/package-lock.json
+
+      - name: Install API dependencies
+        run: npm ci
+        working-directory: api
+
+      # Run Vitest unit tests (excludes property tests via naming convention)
+      # Property-based test files match *-property.test.ts and are run separately
+      # in the next job to allow different timeouts and reporting.
+      - name: Unit tests — API
+        run: npm run test -- --reporter=verbose --exclude "**/*-property.test.ts"
+        working-directory: api
+        env:
+          # Provide stubs so tests that import env-dependent modules don't throw
+          SUPABASE_URL: https://test.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: test-service-role-key
+          SUPABASE_JWT_SECRET: test-jwt-secret-at-least-32-chars-long
+          COOKIE_SECRET: test-cookie-secret-at-least-32-chars-long
+          CORS_ORIGIN: http://localhost:3000
+
+      # n8n node-scripts tests (if present)
+      - name: Check for n8n tests
+        id: n8n_tests_check
+        run: |
+          if [ -f "n8n/package.json" ]; then
+            echo "has_tests=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_tests=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install n8n script dependencies
+        if: steps.n8n_tests_check.outputs.has_tests == 'true'
+        run: npm ci
+        working-directory: n8n
+
+      - name: Unit tests — n8n scripts
+        if: steps.n8n_tests_check.outputs.has_tests == 'true'
+        run: npm run test -- --reporter=verbose --exclude "**/*-property.test.ts"
+        working-directory: n8n
+        env:
+          SUPABASE_URL: https://test.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: test-service-role-key
+          SUPABASE_JWT_SECRET: test-jwt-secret-at-least-32-chars-long
+          COOKIE_SECRET: test-cookie-secret-at-least-32-chars-long
+
+  # ── Job 3: Property-Based Tests ──────────────────────────────────────────────
+  property-based-tests:
+    name: Property-Based Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    # Property tests can take longer than unit tests due to shrinking and
+    # the number of generated examples. Allow up to 10 minutes.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            api/package-lock.json
+
+      - name: Install API dependencies
+        run: npm ci
+        working-directory: api
+
+      # Run only property-based tests (files matching *-property.test.ts)
+      # fast-check is already in devDependencies of the API package.
+      - name: Property-based tests — API
+        run: npm run test -- --reporter=verbose "**/*-property.test.ts"
+        working-directory: api
+        env:
+          SUPABASE_URL: https://test.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: test-service-role-key
+          SUPABASE_JWT_SECRET: test-jwt-secret-at-least-32-chars-long
+          COOKIE_SECRET: test-cookie-secret-at-least-32-chars-long
+          CORS_ORIGIN: http://localhost:3000
+
+      # n8n property tests (if present)
+      - name: Check for n8n property tests
+        id: n8n_pbt_check
+        run: |
+          if [ -f "n8n/package.json" ]; then
+            echo "has_tests=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_tests=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install n8n script dependencies
+        if: steps.n8n_pbt_check.outputs.has_tests == 'true'
+        run: npm ci
+        working-directory: n8n
+
+      - name: Property-based tests — n8n scripts
+        if: steps.n8n_pbt_check.outputs.has_tests == 'true'
+        run: npm run test -- --reporter=verbose "**/*-property.test.ts"
+        working-directory: n8n
+        env:
+          SUPABASE_URL: https://test.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: test-service-role-key
+          SUPABASE_JWT_SECRET: test-jwt-secret-at-least-32-chars-long
+          COOKIE_SECRET: test-cookie-secret-at-least-32-chars-long
+
+  # ── Job 4: Docker Build (no push) ────────────────────────────────────────────
+  docker-build:
+    name: Docker Image Build
+    runs-on: ubuntu-latest
+    # Run after tests pass to avoid wasting build minutes on broken code
+    needs:
+      - unit-tests
+      - property-based-tests
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Build-kit cache improves layer re-use across CI runs
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build the API image — no push; this validates the Dockerfile is correct
+      - name: Build API Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./api
+          file: ./api/Dockerfile
+          push: false                 # CI only validates the build; push happens in CD
+          tags: ai-video-api:ci-${{ github.sha }}
+          # Cache layers from previous builds of the same branch
+          cache-from: type=gha,scope=api
+          cache-to:   type=gha,scope=api,mode=max
+
+      # Build the Dashboard image
+      - name: Build Dashboard Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./dashboard
+          file: ./dashboard/Dockerfile
+          push: false
+          tags: ai-video-dashboard:ci-${{ github.sha }}
+          cache-from: type=gha,scope=dashboard
+          cache-to:   type=gha,scope=dashboard,mode=max
+          # Pass placeholder build args so Next.js can compile without real credentials
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder-anon-key
+            NEXT_PUBLIC_API_BASE_URL=http://localhost/api

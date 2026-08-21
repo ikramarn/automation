@@ -1,0 +1,167 @@
+version: "3.9"
+
+# ── Development Docker Compose ────────────────────────────────────────────────
+#
+# Networks:
+#   public   — Nginx-facing services (nginx → nextjs, nginx → api)
+#   internal — Backend-only services (api ↔ n8n ↔ redis); never directly
+#              reachable from the host or internet
+#
+# Usage:
+#   docker compose up                  # Start all services
+#   docker compose up api nextjs       # Start specific services
+#   docker compose logs -f api         # Tail a service's logs
+#
+# For production, layer in docker-compose.prod.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+networks:
+  public:
+    # Carries Nginx ↔ Next.js and Nginx ↔ API traffic
+  internal:
+    # Carries API ↔ n8n ↔ Redis traffic; never exposed to the host
+
+volumes:
+  n8n_data:
+    # Persists n8n's SQLite database, credentials, and workflow files
+  redis_data:
+    # Persists Redis AOF/RDB snapshots between restarts
+
+services:
+
+  # ── Nginx — Reverse Proxy ───────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.27.0-alpine
+    container_name: nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      # Port 443 is only opened in production overlay (docker-compose.prod.yml)
+      # where TLS certificates are present.
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Dev: no TLS certs; comment in production overlay to add them.
+    networks:
+      - public
+    depends_on:
+      - api
+      - nextjs
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ── Fastify Backend API ─────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+      target: development           # Build target: dev uses tsx watch, prod uses compiled JS
+    container_name: api
+    restart: unless-stopped
+    env_file:
+      - .env                        # Never commit .env; see .env.example
+    environment:
+      NODE_ENV: development
+      PORT: "3001"
+      HOST: "0.0.0.0"
+    volumes:
+      # Mount source for hot-reload in development
+      - ./api/src:/app/src:ro
+    networks:
+      - public                      # Reachable by Nginx
+      - internal                    # Reachable by n8n for /internal/* callbacks
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── Next.js Frontend Dashboard ──────────────────────────────────────────────
+  nextjs:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+      target: development
+    container_name: nextjs
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: development
+      PORT: "3000"
+    volumes:
+      - ./dashboard/src:/app/src:ro
+    networks:
+      - public                      # Reachable by Nginx only
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ── n8n — Pipeline Automation Engine ───────────────────────────────────────
+  n8n:
+    image: n8nio/n8n:1.48.0
+    container_name: n8n
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # n8n is not accessible from the public internet — only API calls it
+      # via the internal network.
+      N8N_HOST: "0.0.0.0"
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: "http"
+      # Disable the n8n built-in basic auth; service-token auth is enforced
+      # by the Backend API before it calls n8n.
+      N8N_BASIC_AUTH_ACTIVE: "false"
+      # Run executions via Redis queue (required for concurrency control)
+      EXECUTIONS_MODE: "queue"
+      QUEUE_BULL_REDIS_HOST: "redis"
+      QUEUE_BULL_REDIS_PORT: "6379"
+      # Limit max concurrent pipeline executions (Req 19.6)
+      EXECUTIONS_CONCURRENCY_LIMIT: "10"
+      # Disable n8n telemetry in self-hosted setup
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      # Workflow source — load from mounted volume
+      N8N_USER_FOLDER: "/home/node/.n8n"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      # Mount workflow JSON files for version control
+      - ./n8n/workflows:/home/node/.n8n/workflows:ro
+    networks:
+      - internal                    # Must never be reachable from the public network
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ── Redis — n8n Execution Queue ─────────────────────────────────────────────
+  redis:
+    image: redis:7.2.5-alpine
+    container_name: redis
+    restart: unless-stopped
+    # No port mapping: Redis is accessible only on the internal network
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal
+    # Use append-only file for durability; acceptable latency trade-off vs. RDB
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
