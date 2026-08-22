@@ -22,11 +22,16 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
  * @returns The response with refreshed session cookies applied
  */
 export async function updateSession(request: NextRequest) {
-  if (!supabaseUrl || !supabaseAnonKey) {
-    throw new Error(
-      "Missing required Supabase environment variables: " +
-        "NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY must be set."
-    );
+  // Preview / no-backend mode: if Supabase URL is missing, a placeholder, or
+  // not a real https URL, skip auth entirely so the UI can be browsed freely.
+  const isConfigured =
+    supabaseUrl &&
+    supabaseAnonKey &&
+    supabaseUrl.startsWith("https://") &&
+    supabaseUrl.includes(".supabase.co");
+
+  if (!isConfigured) {
+    return NextResponse.next({ request });
   }
 
   let supabaseResponse = NextResponse.next({

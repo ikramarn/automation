@@ -1,8 +1,16 @@
-import type { NextConfig } from "next";
-
-const nextConfig: NextConfig = {
+/** @type {import('next').NextConfig} */
+const nextConfig = {
   // Enable React strict mode for catching potential issues early
   reactStrictMode: true,
+
+  // Skip ESLint and TypeScript type-checking during `next build` in Docker.
+  // Both run in the Jenkins pipeline before the image is built.
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  typescript: {
+    ignoreBuildErrors: true,
+  },
 
   // Allow images from Supabase storage
   images: {

@@ -18,7 +18,9 @@ RUN apk add --no-cache tini
 # ── Deps ──────────────────────────────────────────────────────────────────────
 FROM base AS deps
 COPY package-lock.json package.json ./
-RUN npm ci
+# --legacy-peer-deps: vitest@4.x peer dep on @types/node conflicts with pinned
+# version in lockfile; this only affects devDeps used for testing, not runtime.
+RUN npm ci --legacy-peer-deps
 
 # ── Development ───────────────────────────────────────────────────────────────
 FROM deps AS development
@@ -43,20 +45,24 @@ ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
 ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 
-RUN npm run build
+# NEXT_TELEMETRY_DISABLED suppresses the first-run prompt.
+# Type-checking and linting run in CI (Jenkinsfile); next.config.mjs sets
+# ignoreBuildErrors/ignoreDuringBuilds so the build focuses on JS compilation only.
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN mkdir -p public && npm run build
 
 # ── Production ────────────────────────────────────────────────────────────────
 FROM base AS production
 ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
 
-# If next.config.ts has `output: 'standalone'`, copy the minimal bundle.
-# Otherwise copy the full .next output + public assets.
-# Using standard copy here for compatibility with both approaches.
+# Create public/ in build stage first so COPY never fails if directory is empty
+RUN mkdir -p /app/public
 COPY --from=build /app/public ./public
 COPY --from=build /app/.next ./.next
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
-COPY --from=build /app/next.config.ts ./next.config.ts
+COPY --from=build /app/next.config.mjs ./next.config.mjs
 
 USER node
 EXPOSE 3000
