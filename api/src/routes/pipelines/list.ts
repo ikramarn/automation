@@ -24,6 +24,15 @@ export async function listPipelinesRoute(app: FastifyInstance): Promise<void> {
       .order('created_at', { ascending: false });
 
     if (error) {
+      // If table doesn't exist yet (migrations not run), return empty array
+      // gracefully instead of crashing with a 500
+      if (
+        error.message?.includes('relation') ||
+        error.message?.includes('does not exist') ||
+        error.code === '42P01'
+      ) {
+        return reply.status(200).send([]);
+      }
       request.log.error({ userId, err: error.message }, 'Failed to list pipelines');
       throw AppError.internal('Failed to retrieve pipelines');
     }

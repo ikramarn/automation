@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import DashboardNav from "@/components/DashboardNav";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -7,16 +8,16 @@ interface DashboardLayoutProps {
 
 /**
  * Protected dashboard route group layout.
+ * Adds the top navigation bar with sign out + page links.
  * Redirects unauthenticated visitors to /login.
- * In preview mode (no Supabase), skips auth check entirely.
  */
 export default async function DashboardLayout({
   children,
 }: DashboardLayoutProps) {
   if (!isSupabaseConfigured()) {
-    // Preview mode — render without auth check
     return (
-      <div className="flex min-h-screen flex-col">
+      <div className="min-h-screen bg-gray-50">
+        <DashboardNav />
         <main className="flex-1">{children}</main>
       </div>
     );
@@ -32,7 +33,8 @@ export default async function DashboardLayout({
   }
 
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="min-h-screen bg-gray-50">
+      <DashboardNav />
       <main className="flex-1">{children}</main>
     </div>
   );

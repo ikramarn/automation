@@ -64,6 +64,9 @@ async function fetchPipelines(url: string): Promise<Pipeline[]> {
     headers,
   });
 
+  // Treat 401 as empty — user session may not be synced to API yet
+  if (res.status === 401) return [];
+
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body?.message ?? `Failed to fetch pipelines: ${res.status}`);
