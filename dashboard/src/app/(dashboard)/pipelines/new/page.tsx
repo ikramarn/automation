@@ -645,10 +645,10 @@ function Step3Publishing({
           <p className="mt-1 text-amber-600">
             Connect at least one social platform in{" "}
             <a
-              href="/settings/integrations#social"
+              href="/settings/credentials"
               className="font-medium underline hover:text-amber-800 focus:outline-none focus:ring-1 focus:ring-amber-500"
             >
-              Settings → Integrations
+              Settings → Credentials
             </a>{" "}
             before creating a pipeline.
           </p>
