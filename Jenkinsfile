@@ -12,14 +12,15 @@
 // ── Jenkins Credentials Required ─────────────────────────────────────────────
 // Configure in Jenkins → Manage Credentials → Global:
 //
-//   DOCKERHUB_CREDENTIALS    Username/Password  — Docker Hub (ikcloudky6)
+//   docker-hub               Username/Password  — Docker Hub (ikcloudky6)
 //   KUBECONFIG_SECRET        Secret file        — kubeconfig pointing to K8s
 //                                                 master via Tailscale IP
 //   VPS_SSH_KEY              SSH private key    — deploy user on Hostinger VPS
 //   VPS_HOST                 Secret text        — VPS Tailscale IP or hostname
-//   NEXT_PUBLIC_SUPABASE_URL Secret text        — Supabase project URL
-//   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY  Secret text — Supabase publishable key
-//   NEXT_PUBLIC_API_BASE_URL Secret text        — e.g. https://app.yourdomain.com/api
+//   DASHBOARD_BUILD_ENV      Secret file        — .env file containing:
+//                                                   NEXT_PUBLIC_SUPABASE_URL
+//                                                   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+//                                                   NEXT_PUBLIC_API_BASE_URL
 
 pipeline {
     agent any
@@ -130,17 +131,15 @@ pipeline {
 
                 stage('Build Dashboard Image') {
                     steps {
-                        withCredentials([
-                            string(credentialsId: 'NEXT_PUBLIC_SUPABASE_URL',                variable: 'SUPABASE_URL'),
-                            string(credentialsId: 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',    variable: 'SUPABASE_KEY'),
-                            string(credentialsId: 'NEXT_PUBLIC_API_BASE_URL',                variable: 'API_BASE_URL')
-                        ]) {
+                        withCredentials([file(credentialsId: 'DASHBOARD_BUILD_ENV', variable: 'DASHBOARD_ENV_FILE')]) {
                             sh """
+                                # Source the env file to get build args
+                                set -a && . \${DASHBOARD_ENV_FILE} && set +a
                                 docker build \\
                                   --target production \\
-                                  --build-arg NEXT_PUBLIC_SUPABASE_URL=\${SUPABASE_URL} \\
-                                  --build-arg NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=\${SUPABASE_KEY} \\
-                                  --build-arg NEXT_PUBLIC_API_BASE_URL=\${API_BASE_URL} \\
+                                  --build-arg NEXT_PUBLIC_SUPABASE_URL=\${NEXT_PUBLIC_SUPABASE_URL} \\
+                                  --build-arg NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=\${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY} \\
+                                  --build-arg NEXT_PUBLIC_API_BASE_URL=\${NEXT_PUBLIC_API_BASE_URL} \\
                                   --tag ${REGISTRY}:dashboard-${IMAGE_TAG} \\
                                   --tag ${REGISTRY}:dashboard-latest \\
                                   --cache-from ${REGISTRY}:dashboard-latest \\
@@ -164,7 +163,7 @@ pipeline {
             }
             steps {
                 withCredentials([usernamePassword(
-                    credentialsId: 'DOCKERHUB_CREDENTIALS',
+                    credentialsId: 'docker-hub',
                     usernameVariable: 'DOCKER_USER',
                     passwordVariable: 'DOCKER_PASS'
                 )]) {
