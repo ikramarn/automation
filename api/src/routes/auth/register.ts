@@ -52,10 +52,15 @@ export async function registerRoute(app: FastifyInstance): Promise<void> {
 
       const supabase = createSupabaseAdminClient();
 
-      const { data, error } = await supabase.auth.admin.createUser({
+      // Use the public signUp method — this correctly sends a confirmation email
+      // via the configured SMTP (Resend) and respects email_confirm settings.
+      // The admin.createUser path bypasses SMTP which is why emails weren't sent.
+      const { data, error } = await supabase.auth.signUp({
         email,
         password,
-        email_confirm: false, // let Supabase send the verification email
+        options: {
+          emailRedirectTo: process.env['EMAIL_REDIRECT_TO'] ?? `${process.env['APP_URL'] ?? ''}/verify-email`,
+        },
       });
 
       if (error) {
@@ -70,22 +75,6 @@ export async function registerRoute(app: FastifyInstance): Promise<void> {
           throw new AppError(409, 'email_already_registered', 'An account with this email already exists');
         }
         throw new AppError(400, 'registration_failed', error.message);
-      }
-
-      // Supabase admin.createUser with email_confirm: false creates the user in an
-      // unconfirmed state. Send the verification email via generateLink (magiclink type
-      // sends a signup confirmation link without needing the password again).
-      const { error: linkError } = await supabase.auth.admin.generateLink({
-        type: 'magiclink',
-        email,
-        options: {
-          redirectTo: process.env['EMAIL_REDIRECT_TO'] ?? `${process.env['APP_URL'] ?? ''}/verify-email`,
-        },
-      });
-
-      if (linkError) {
-        // Non-fatal: user was created but email couldn't be sent — log and continue
-        app.log.warn({ err: linkError, email }, 'Failed to send verification email after registration');
       }
 
       return reply.status(201).send({ message: 'Verification email sent' });
