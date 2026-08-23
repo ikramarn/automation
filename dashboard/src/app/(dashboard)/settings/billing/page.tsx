@@ -12,6 +12,7 @@
 
 import { useState } from "react";
 import useSWR from "swr";
+import { createClient } from "@/lib/supabase/client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
@@ -30,10 +31,13 @@ interface SubscriptionStatus {
 // ---------------------------------------------------------------------------
 
 async function fetchSubscriptionStatus(url: string): Promise<SubscriptionStatus> {
-  const res = await fetch(url, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-  });
+  const supabase = createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(url, { credentials: "include", headers });
+  if (res.status === 401) return { subscription_status: "inactive", stripe_subscription_id: null, subscription_expires_at: null };
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body?.message ?? `Failed to fetch subscription: ${res.status}`);
@@ -317,7 +321,7 @@ export default function BillingPage() {
   );
 
   return (
-    <div className="container mx-auto max-w-2xl px-4 py-10">
+    <>
       <div className="mb-8">
         <h1 className="text-2xl font-bold tracking-tight text-gray-900">Billing</h1>
         <p className="mt-1 text-sm text-gray-500">
@@ -331,11 +335,8 @@ export default function BillingPage() {
         <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700">
           <p className="font-medium">Failed to load billing information</p>
           <p className="mt-1 text-red-600">{error.message}</p>
-          <button
-            type="button"
-            onClick={() => mutate()}
-            className="mt-3 rounded-md bg-red-100 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-200 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-1"
-          >
+          <button type="button" onClick={() => mutate()}
+            className="mt-3 rounded-md bg-red-100 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-200">
             Retry
           </button>
         </div>
@@ -344,6 +345,6 @@ export default function BillingPage() {
       {!isLoading && !error && data && (
         <BillingContent data={data} mutate={() => mutate()} />
       )}
-    </div>
+    </>
   );
 }

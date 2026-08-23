@@ -24,7 +24,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const pathname = usePathname();
 
   return (
-    <div className="container mx-auto max-w-2xl px-4 pb-16 pt-8">
+    <div className="container mx-auto max-w-2xl px-4 pb-16 pt-6">
       {/* Tab navigation */}
       <nav
         aria-label="Settings navigation"
