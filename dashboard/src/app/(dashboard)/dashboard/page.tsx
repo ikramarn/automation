@@ -12,6 +12,7 @@
 
 import Link from "next/link";
 import useSWR from "swr";
+import { createClient } from "@/lib/supabase/client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
@@ -46,9 +47,21 @@ export interface Pipeline {
 // ---------------------------------------------------------------------------
 
 async function fetchPipelines(url: string): Promise<Pipeline[]> {
+  // Get the current Supabase session token to authenticate API requests
+  const supabase = createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
   const res = await fetch(url, {
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers,
   });
 
   if (!res.ok) {
