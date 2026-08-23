@@ -5,6 +5,9 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
+// Top-level nav: Pipelines + Settings only.
+// Settings sub-pages (Credentials, Account, Billing, Notifications) are
+// handled by the settings layout tab bar — no duplication here.
 const NAV_ITEMS = [
   {
     href: "/dashboard",
@@ -18,41 +21,12 @@ const NAV_ITEMS = [
   },
   {
     href: "/settings/credentials",
-    label: "Credentials",
+    label: "Settings",
     icon: (
       <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-          d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
-      </svg>
-    ),
-  },
-  {
-    href: "/settings/account",
-    label: "Account",
-    icon: (
-      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-          d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z" />
-      </svg>
-    ),
-  },
-  {
-    href: "/settings/billing",
-    label: "Billing",
-    icon: (
-      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-          d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25v10.5A2.25 2.25 0 004.5 19.5z" />
-      </svg>
-    ),
-  },
-  {
-    href: "/settings/notifications",
-    label: "Notifications",
-    icon: (
-      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-          d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+          d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 010 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 010-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28z" />
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
       </svg>
     ),
   },
@@ -69,11 +43,10 @@ export default function DashboardNav() {
     try {
       const supabase = createClient();
       await supabase.auth.signOut();
-      // Also clear the API session cookie
       await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL ?? ""}/auth/logout`, {
         method: "POST",
         credentials: "include",
-      }).catch(() => {}); // non-fatal
+      }).catch(() => {});
     } finally {
       router.push("/login");
     }
@@ -91,7 +64,6 @@ export default function DashboardNav() {
 
         {/* Left: brand + hamburger */}
         <div className="flex items-center gap-3">
-          {/* Mobile hamburger */}
           <button
             type="button"
             className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 lg:hidden"
@@ -104,30 +76,24 @@ export default function DashboardNav() {
             </svg>
           </button>
 
-          {/* Brand */}
           <Link href="/dashboard" className="flex items-center gap-2">
             <div className="relative flex h-8 w-8 items-center justify-center">
               <div className="absolute inset-0 rounded-full border border-indigo-300" />
               <div className="h-2.5 w-2.5 rounded-full bg-gradient-to-br from-indigo-500 to-purple-500" />
             </div>
-            <span className="hidden text-base font-bold text-gray-900 sm:block">
-              AutomateSocials
-            </span>
+            <span className="hidden text-base font-bold text-gray-900 sm:block">AutomateSocials</span>
           </Link>
         </div>
 
         {/* Center: nav links (desktop) */}
-        <nav className="hidden lg:flex items-center gap-1" aria-label="Main navigation">
+        <nav className="hidden lg:flex items-center gap-1">
           {NAV_ITEMS.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
+            <Link key={item.href} href={item.href}
               className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition ${
                 isActive(item.href)
                   ? "bg-indigo-50 text-indigo-700"
                   : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
-              }`}
-            >
+              }`}>
               <span className={isActive(item.href) ? "text-indigo-600" : "text-gray-400"}>
                 {item.icon}
               </span>
@@ -138,18 +104,12 @@ export default function DashboardNav() {
 
         {/* Right: create pipeline + sign out */}
         <div className="flex items-center gap-2">
-          <Link
-            href="/pipelines/new"
-            className="hidden rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500 sm:block"
-          >
+          <Link href="/pipelines/new"
+            className="hidden rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500 sm:block">
             + New Pipeline
           </Link>
-          <button
-            type="button"
-            onClick={handleSignOut}
-            disabled={signingOut}
-            className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-red-600 disabled:opacity-50"
-          >
+          <button type="button" onClick={handleSignOut} disabled={signingOut}
+            className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-red-600 disabled:opacity-50">
             <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                 d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
@@ -162,25 +122,12 @@ export default function DashboardNav() {
       {/* ── Mobile drawer ───────────────────────────────────────────────── */}
       {mobileOpen && (
         <div className="fixed inset-0 z-40 lg:hidden">
-          {/* Backdrop */}
-          <div
-            className="absolute inset-0 bg-black/30"
-            onClick={() => setMobileOpen(false)}
-            aria-hidden="true"
-          />
-          {/* Drawer */}
-          <nav
-            className="absolute left-0 top-0 h-full w-72 bg-white shadow-xl flex flex-col"
-            aria-label="Mobile navigation"
-          >
+          <div className="absolute inset-0 bg-black/30" onClick={() => setMobileOpen(false)} aria-hidden="true" />
+          <nav className="absolute left-0 top-0 h-full w-72 bg-white shadow-xl flex flex-col">
             <div className="flex h-16 items-center justify-between border-b px-4">
               <span className="font-bold text-gray-900">AutomateSocials</span>
-              <button
-                type="button"
-                onClick={() => setMobileOpen(false)}
-                className="rounded-lg p-2 text-gray-500 hover:bg-gray-100"
-                aria-label="Close menu"
-              >
+              <button type="button" onClick={() => setMobileOpen(false)}
+                className="rounded-lg p-2 text-gray-500 hover:bg-gray-100" aria-label="Close menu">
                 <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
@@ -188,37 +135,22 @@ export default function DashboardNav() {
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-1">
               {NAV_ITEMS.map((item) => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={() => setMobileOpen(false)}
+                <Link key={item.href} href={item.href} onClick={() => setMobileOpen(false)}
                   className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
-                    isActive(item.href)
-                      ? "bg-indigo-50 text-indigo-700"
-                      : "text-gray-600 hover:bg-gray-100"
-                  }`}
-                >
-                  <span className={isActive(item.href) ? "text-indigo-600" : "text-gray-400"}>
-                    {item.icon}
-                  </span>
+                    isActive(item.href) ? "bg-indigo-50 text-indigo-700" : "text-gray-600 hover:bg-gray-100"
+                  }`}>
+                  <span className={isActive(item.href) ? "text-indigo-600" : "text-gray-400"}>{item.icon}</span>
                   {item.label}
                 </Link>
               ))}
-              <Link
-                href="/pipelines/new"
-                onClick={() => setMobileOpen(false)}
-                className="flex items-center gap-3 rounded-lg bg-indigo-600 px-3 py-2.5 text-sm font-semibold text-white mt-2"
-              >
+              <Link href="/pipelines/new" onClick={() => setMobileOpen(false)}
+                className="flex items-center gap-3 rounded-lg bg-indigo-600 px-3 py-2.5 text-sm font-semibold text-white mt-2">
                 + New Pipeline
               </Link>
             </div>
             <div className="border-t p-4">
-              <button
-                type="button"
-                onClick={handleSignOut}
-                disabled={signingOut}
-                className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-red-600 hover:bg-red-50"
-              >
+              <button type="button" onClick={handleSignOut} disabled={signingOut}
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-red-600 hover:bg-red-50">
                 <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                     d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />

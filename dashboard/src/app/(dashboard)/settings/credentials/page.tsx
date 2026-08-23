@@ -15,6 +15,7 @@
 import { useSearchParams } from "next/navigation";
 import { Suspense, useState, type FormEvent } from "react";
 import useSWR from "swr";
+import { createClient } from "@/lib/supabase/client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
@@ -43,10 +44,14 @@ const SOCIAL_PLATFORMS: { id: SocialPlatform; label: string }[] = [
 // ---------------------------------------------------------------------------
 
 async function fetchCredentials(url: string): Promise<Credential[]> {
-  const res = await fetch(url, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-  });
+  const supabase = createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const res = await fetch(url, { credentials: "include", headers });
+  if (res.status === 401) return [];
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body?.message ?? `Failed to fetch credentials: ${res.status}`);
