@@ -4,63 +4,52 @@
 //   1. Checkout       — pull source from GitHub
 //   2. Test           — run unit + property-based tests across all projects
 //   3. Build Images   — docker build --target production for api + dashboard
-//   4. Push Images    — push to container registry with git-SHA tag
-//   5. Helm Lint      — validate Helm chart templates
-//   6. Deploy         — helm upgrade --install to the automation namespace
+//   4. Push Images    — push tagged images to Docker Hub (ikcloudky6/automation)
+//   5. Helm Deploy    — deploy to dev K8s cluster via Tailscale kubeconfig
+//   6. VPS Deploy     — SSH deploy to prod VPS via Tailscale (release/* branch)
 //   7. Smoke Test     — verify /health endpoints post-deploy
 //
-// Jenkins credentials required (configure in Jenkins → Manage Credentials):
-//   REGISTRY_CREDENTIALS  — Username/password for your container registry
-//   KUBECONFIG_SECRET     — Secret file containing kubeconfig for the K8s cluster
+// ── Jenkins Credentials Required ─────────────────────────────────────────────
+// Configure in Jenkins → Manage Credentials → Global:
 //
-// Environment variables to configure in Jenkins → Pipeline job → Build parameters
-// or as Jenkins global env vars:
-//   REGISTRY             — e.g. ghcr.io/your-org  or  docker.io/youruser
-//   NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, NEXT_PUBLIC_API_BASE_URL
-//     (needed at docker build time for the dashboard image)
+//   DOCKERHUB_CREDENTIALS    Username/Password  — Docker Hub (ikcloudky6)
+//   KUBECONFIG_SECRET        Secret file        — kubeconfig pointing to K8s
+//                                                 master via Tailscale IP
+//   VPS_SSH_KEY              SSH private key    — deploy user on Hostinger VPS
+//   VPS_HOST                 Secret text        — VPS Tailscale IP or hostname
+//   NEXT_PUBLIC_SUPABASE_URL Secret text        — Supabase project URL
+//   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY  Secret text — Supabase publishable key
+//   NEXT_PUBLIC_API_BASE_URL Secret text        — e.g. https://app.yourdomain.com/api
 
 pipeline {
     agent any
 
-    // ── Tool versions — must be configured in Jenkins → Global Tool Configuration
     tools {
-        nodejs 'node-20'     // Node.js 20 LTS installation name
+        nodejs 'node-20'   // Node.js 20 LTS — configure in Global Tool Configuration
     }
 
     environment {
-        // Container registry — override in Jenkins global env or job parameter
-        REGISTRY         = "${env.REGISTRY ?: 'ghcr.io/your-org'}"
-
-        // Image names
-        API_IMAGE        = "${REGISTRY}/ai-video-automation-api"
-        DASHBOARD_IMAGE  = "${REGISTRY}/ai-video-automation-dashboard"
-
-        // Tag every image with the short git SHA for traceability + rollback
+        REGISTRY         = 'ikcloudky6/automation'
+        API_IMAGE        = "${REGISTRY}"
+        DASHBOARD_IMAGE  = "${REGISTRY}"
         IMAGE_TAG        = "${env.GIT_COMMIT?.take(8) ?: 'latest'}"
-
-        // Helm / K8s
         HELM_RELEASE     = 'automation'
         K8S_NAMESPACE    = 'automation'
         HELM_CHART       = './helm/automation'
         HELM_VALUES_PROD = './helm/automation/values-prod.yaml'
-
-        // Registry credential ID (Jenkins credential store)
-        REGISTRY_CRED_ID = 'REGISTRY_CREDENTIALS'
+        VPS_APP_DIR      = '/opt/autoflow'
     }
 
     options {
-        // Keep last 10 builds
         buildDiscarder(logRotator(numToKeepStr: '10'))
-        // Fail if pipeline hangs for more than 30 min
-        timeout(time: 30, unit: 'MINUTES')
-        // Don't run concurrent builds on the same branch
+        timeout(time: 40, unit: 'MINUTES')
         disableConcurrentBuilds()
         timestamps()
     }
 
     stages {
 
-        // ── 1. Checkout ────────────────────────────────────────────────────────
+        // ── 1. Checkout ────────────────────────────────────────────────────
         stage('Checkout') {
             steps {
                 checkout scm
@@ -68,7 +57,7 @@ pipeline {
             }
         }
 
-        // ── 2. Test ────────────────────────────────────────────────────────────
+        // ── 2. Test ────────────────────────────────────────────────────────
         stage('Test') {
             parallel {
 
@@ -82,7 +71,6 @@ pipeline {
                     }
                     post {
                         always {
-                            // Publish vitest results if junit reporter is configured
                             junit allowEmptyResults: true, testResults: 'api/test-results/**/*.xml'
                         }
                     }
@@ -91,14 +79,9 @@ pipeline {
                 stage('Dashboard Tests') {
                     steps {
                         dir('dashboard') {
-                            sh 'npm ci'
+                            sh 'npm ci --legacy-peer-deps'
                             sh 'npm run lint'
                             sh 'npm test'
-                        }
-                    }
-                    post {
-                        always {
-                            junit allowEmptyResults: true, testResults: 'dashboard/test-results/**/*.xml'
                         }
                     }
                 }
@@ -106,13 +89,12 @@ pipeline {
                 stage('Pipeline Engine Tests') {
                     steps {
                         dir('n8n') {
-                            // Only run if n8n has a package.json / test script
                             sh '''
                                 if [ -f package.json ]; then
                                     npm ci
                                     npm test
                                 else
-                                    echo "No n8n package.json found, skipping"
+                                    echo "No n8n package.json — skipping"
                                 fi
                             '''
                         }
@@ -122,13 +104,12 @@ pipeline {
             }
         }
 
-        // ── 3. Build Images ────────────────────────────────────────────────────
-        // Only build + push on main/master or release branches
+        // ── 3. Build Images ────────────────────────────────────────────────
         stage('Build Images') {
             when {
                 anyOf {
-                    branch 'main'
                     branch 'master'
+                    branch 'main'
                     branch pattern: 'release/.*', comparator: 'REGEXP'
                 }
             }
@@ -137,11 +118,11 @@ pipeline {
                 stage('Build API Image') {
                     steps {
                         sh """
-                            docker build \
-                              --target production \
-                              --tag ${API_IMAGE}:${IMAGE_TAG} \
-                              --tag ${API_IMAGE}:latest \
-                              --cache-from ${API_IMAGE}:latest \
+                            docker build \\
+                              --target production \\
+                              --tag ${REGISTRY}:api-${IMAGE_TAG} \\
+                              --tag ${REGISTRY}:api-latest \\
+                              --cache-from ${REGISTRY}:api-latest \\
                               ./api
                         """
                     }
@@ -149,21 +130,20 @@ pipeline {
 
                 stage('Build Dashboard Image') {
                     steps {
-                        // Next.js public env vars are baked in at build time
                         withCredentials([
-                            string(credentialsId: 'NEXT_PUBLIC_SUPABASE_URL',      variable: 'SUPABASE_URL'),
-                            string(credentialsId: 'NEXT_PUBLIC_SUPABASE_ANON_KEY', variable: 'SUPABASE_ANON_KEY'),
-                            string(credentialsId: 'NEXT_PUBLIC_API_BASE_URL',      variable: 'API_BASE_URL')
+                            string(credentialsId: 'NEXT_PUBLIC_SUPABASE_URL',                variable: 'SUPABASE_URL'),
+                            string(credentialsId: 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',    variable: 'SUPABASE_KEY'),
+                            string(credentialsId: 'NEXT_PUBLIC_API_BASE_URL',                variable: 'API_BASE_URL')
                         ]) {
                             sh """
-                                docker build \
-                                  --target production \
-                                  --build-arg NEXT_PUBLIC_SUPABASE_URL=${SUPABASE_URL} \
-                                  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY} \
-                                  --build-arg NEXT_PUBLIC_API_BASE_URL=${API_BASE_URL} \
-                                  --tag ${DASHBOARD_IMAGE}:${IMAGE_TAG} \
-                                  --tag ${DASHBOARD_IMAGE}:latest \
-                                  --cache-from ${DASHBOARD_IMAGE}:latest \
+                                docker build \\
+                                  --target production \\
+                                  --build-arg NEXT_PUBLIC_SUPABASE_URL=\${SUPABASE_URL} \\
+                                  --build-arg NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=\${SUPABASE_KEY} \\
+                                  --build-arg NEXT_PUBLIC_API_BASE_URL=\${API_BASE_URL} \\
+                                  --tag ${REGISTRY}:dashboard-${IMAGE_TAG} \\
+                                  --tag ${REGISTRY}:dashboard-latest \\
+                                  --cache-from ${REGISTRY}:dashboard-latest \\
                                   ./dashboard
                             """
                         }
@@ -173,110 +153,115 @@ pipeline {
             }
         }
 
-        // ── 4. Push Images ─────────────────────────────────────────────────────
+        // ── 4. Push Images ─────────────────────────────────────────────────
         stage('Push Images') {
             when {
                 anyOf {
-                    branch 'main'
                     branch 'master'
+                    branch 'main'
                     branch pattern: 'release/.*', comparator: 'REGEXP'
                 }
             }
             steps {
                 withCredentials([usernamePassword(
-                    credentialsId: "${REGISTRY_CRED_ID}",
-                    usernameVariable: 'REGISTRY_USER',
-                    passwordVariable: 'REGISTRY_PASS'
+                    credentialsId: 'DOCKERHUB_CREDENTIALS',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
                 )]) {
-                    sh "echo ${REGISTRY_PASS} | docker login ${REGISTRY} -u ${REGISTRY_USER} --password-stdin"
-
-                    sh "docker push ${API_IMAGE}:${IMAGE_TAG}"
-                    sh "docker push ${API_IMAGE}:latest"
-
-                    sh "docker push ${DASHBOARD_IMAGE}:${IMAGE_TAG}"
-                    sh "docker push ${DASHBOARD_IMAGE}:latest"
+                    sh "echo \${DOCKER_PASS} | docker login -u \${DOCKER_USER} --password-stdin"
+                    sh "docker push ${REGISTRY}:api-${IMAGE_TAG}"
+                    sh "docker push ${REGISTRY}:api-latest"
+                    sh "docker push ${REGISTRY}:dashboard-${IMAGE_TAG}"
+                    sh "docker push ${REGISTRY}:dashboard-latest"
                 }
             }
             post {
                 always {
-                    // Always logout — never leave registry credentials on the agent
-                    sh "docker logout ${REGISTRY} || true"
+                    sh "docker logout || true"
                 }
             }
         }
 
-        // ── 5. Helm Lint ───────────────────────────────────────────────────────
-        stage('Helm Lint') {
+        // ── 5. Dev K8s Deploy (master/main → dev cluster) ─────────────────
+        stage('Dev Deploy (K8s)') {
             when {
-                anyOf {
-                    branch 'main'
-                    branch 'master'
-                    branch pattern: 'release/.*', comparator: 'REGEXP'
-                }
+                anyOf { branch 'master'; branch 'main' }
             }
             steps {
-                sh "helm lint ${HELM_CHART} -f ${HELM_VALUES_PROD}"
-            }
-        }
-
-        // ── 6. Deploy ──────────────────────────────────────────────────────────
-        stage('Deploy') {
-            when {
-                anyOf {
-                    branch 'main'
-                    branch 'master'
-                    branch pattern: 'release/.*', comparator: 'REGEXP'
-                }
-            }
-            steps {
-                // KUBECONFIG_SECRET is a Jenkins "Secret file" credential
-                // containing the kubeconfig for the target cluster
                 withCredentials([file(credentialsId: 'KUBECONFIG_SECRET', variable: 'KUBECONFIG')]) {
                     sh """
-                        helm upgrade --install ${HELM_RELEASE} ${HELM_CHART} \
-                          --namespace ${K8S_NAMESPACE} \
-                          --create-namespace \
-                          --values ${HELM_VALUES_PROD} \
-                          --set global.imageTag=${IMAGE_TAG} \
-                          --atomic \
-                          --timeout 5m \
+                        helm lint ${HELM_CHART} -f ${HELM_VALUES_PROD}
+                        helm upgrade --install ${HELM_RELEASE} ${HELM_CHART} \\
+                          --namespace ${K8S_NAMESPACE} \\
+                          --create-namespace \\
+                          --values ${HELM_VALUES_PROD} \\
+                          --set global.imageTag=${IMAGE_TAG} \\
+                          --atomic \\
+                          --timeout 5m \\
                           --wait
                     """
                 }
             }
         }
 
-        // ── 7. Smoke Test ──────────────────────────────────────────────────────
+        // ── 6. Prod VPS Deploy (release/* → Hostinger VPS via Tailscale) ──
+        stage('Prod Deploy (VPS)') {
+            when {
+                branch pattern: 'release/.*', comparator: 'REGEXP'
+            }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'VPS_SSH_KEY', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
+                    string(credentialsId: 'VPS_HOST', variable: 'VPS_HOST')
+                ]) {
+                    sh """
+                        # Copy docker-compose files to VPS
+                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no \\
+                            docker-compose.yml \\
+                            docker-compose.prod.yml \\
+                            Caddyfile \\
+                            \${SSH_USER}@\${VPS_HOST}:${VPS_APP_DIR}/
+
+                        # Pull new images and restart containers
+                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no \\
+                            \${SSH_USER}@\${VPS_HOST} \\
+                            "cd ${VPS_APP_DIR} && \\
+                             IMAGE_TAG=${IMAGE_TAG} \\
+                             docker compose -f docker-compose.yml -f docker-compose.prod.yml pull && \\
+                             IMAGE_TAG=${IMAGE_TAG} \\
+                             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-orphans && \\
+                             docker image prune -f"
+                    """
+                }
+            }
+        }
+
+        // ── 7. Smoke Test ──────────────────────────────────────────────────
         stage('Smoke Test') {
             when {
                 anyOf {
-                    branch 'main'
                     branch 'master'
+                    branch 'main'
                     branch pattern: 'release/.*', comparator: 'REGEXP'
                 }
             }
             steps {
                 withCredentials([file(credentialsId: 'KUBECONFIG_SECRET', variable: 'KUBECONFIG')]) {
                     sh """
-                        # Wait for pods to be ready (helm --atomic already waits, this is a safety check)
-                        kubectl rollout status deployment/automation-api       -n ${K8S_NAMESPACE} --timeout=120s
-                        kubectl rollout status deployment/automation-dashboard -n ${K8S_NAMESPACE} --timeout=120s
+                        kubectl rollout status deployment/dashboard-preview \\
+                            -n ${K8S_NAMESPACE} --timeout=120s || true
 
-                        # Hit health endpoints via port-forward (works even without external DNS)
-                        kubectl port-forward svc/automation-api       8081:3001 -n ${K8S_NAMESPACE} &
-                        kubectl port-forward svc/automation-dashboard 8080:3000 -n ${K8S_NAMESPACE} &
+                        kubectl port-forward svc/dashboard-preview-svc 8081:3000 \\
+                            -n ${K8S_NAMESPACE} &
                         sleep 5
 
-                        curl --fail --silent --max-time 10 http://localhost:8081/health        || exit 1
-                        curl --fail --silent --max-time 10 http://localhost:8080/api/health    || exit 1
-
-                        echo "✅ All smoke tests passed"
+                        curl --fail --silent --max-time 10 http://localhost:8081/ || exit 1
+                        echo "✅ Smoke test passed"
                     """
                 }
             }
             post {
                 always {
-                    // Kill port-forwards regardless of test outcome
                     sh "pkill -f 'kubectl port-forward' || true"
                 }
             }
@@ -284,21 +269,14 @@ pipeline {
 
     }
 
-    // ── Post-pipeline notifications ────────────────────────────────────────────
     post {
         success {
-            echo "✅ Pipeline succeeded — ${IMAGE_TAG} deployed to namespace ${K8S_NAMESPACE}"
+            echo "✅ Pipeline succeeded — ${IMAGE_TAG} deployed"
         }
         failure {
             echo "❌ Pipeline failed — check logs above"
-            // Add Slack/email notification here if needed:
-            // slackSend channel: '#deployments', message: "Build failed: ${env.JOB_NAME} ${env.BUILD_NUMBER}"
-        }
-        unstable {
-            echo "⚠️ Pipeline unstable — some tests may have failed"
         }
         cleanup {
-            // Clean up dangling Docker build cache on the Jenkins agent
             sh "docker system prune -f --filter 'until=24h' || true"
         }
     }

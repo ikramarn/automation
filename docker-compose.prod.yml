@@ -1,124 +1,62 @@
 version: "3.9"
 
-# ── Production Overrides ──────────────────────────────────────────────────────
+# ── Production Docker Compose Overlay ────────────────────────────────────────
 #
-# This file is layered on top of docker-compose.yml in production:
-#
+# Usage (on the VPS):
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 #
-# Changes vs. development:
-#   - All services use pinned image versions (no `latest`)
-#   - `restart: always` replaces `unless-stopped` for unattended recovery
-#   - CPU and memory limits are set to prevent runaway containers
-#   - .env.prod is used instead of .env (never commit .env.prod to git)
-#   - Nginx opens port 443 and mounts TLS certificates
-#   - Source hot-reload mounts are removed from api/nextjs
-#   - n8n and Redis data volumes are explicitly named for easy backup
+# This overlay:
+#   - Replaces build: with pre-built image: references from Docker Hub
+#   - Removes dev volume mounts (no hot-reload in prod)
+#   - Enables port 443 for TLS (handled by Caddy, not nginx)
+#   - Removes nginx (Caddy handles reverse proxy + SSL in prod)
+#   - Sets NODE_ENV=production
+#   - Adds restart: always for all services
 
 services:
 
-  # ── Nginx ───────────────────────────────────────────────────────────────────
-  nginx:
-    image: nginx:1.27.0-alpine        # Pinned — upgrade deliberately after testing
-    restart: always
-    env_file:
-      - .env.prod
-    ports:
-      - "80:80"
-      - "443:443"                     # TLS — only in production
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      # TLS certificates provisioned by Certbot / Let's Encrypt on the host.
-      # Mount the live cert directory for Nginx to read.
-      - /etc/letsencrypt/live/${DOMAIN}:/etc/letsencrypt/live/${DOMAIN}:ro
-      - /etc/letsencrypt/archive/${DOMAIN}:/etc/letsencrypt/archive/${DOMAIN}:ro
-      - /etc/letsencrypt/options-ssl-nginx.conf:/etc/letsencrypt/options-ssl-nginx.conf:ro
-      - /etc/letsencrypt/ssl-dhparams.pem:/etc/letsencrypt/ssl-dhparams.pem:ro
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 128M
-
   # ── Fastify Backend API ─────────────────────────────────────────────────────
   api:
-    # In production, use a pre-built and tagged image from your container registry.
-    # The image tag is injected at deploy time via CI/CD (e.g. SHA or semver tag).
-    # Fallback build context is kept so `docker compose build` still works locally.
-    image: ${REGISTRY:-ghcr.io/your-org}/ai-video-api:${IMAGE_TAG:-latest}
-    build:
-      context: ./api
-      dockerfile: Dockerfile
-      target: production
-    restart: always
-    env_file:
-      - .env.prod
+    image: ${REGISTRY:-ikcloudky6/automation}:api-${IMAGE_TAG:-latest}
+    build: !reset null
     environment:
       NODE_ENV: production
-    # No source volume mounts — run compiled JS from the image only
-    volumes: []
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 512M
+      PORT: "3001"
+      HOST: "0.0.0.0"
+    volumes: !reset []
+    restart: always
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
-  # ── Next.js Frontend Dashboard ──────────────────────────────────────────────
+  # ── Next.js Dashboard ───────────────────────────────────────────────────────
   nextjs:
-    image: ${REGISTRY:-ghcr.io/your-org}/ai-video-dashboard:${IMAGE_TAG:-latest}
-    build:
-      context: ./dashboard
-      dockerfile: Dockerfile
-      target: production
-    restart: always
-    env_file:
-      - .env.prod
+    image: ${REGISTRY:-ikcloudky6/automation}:dashboard-${IMAGE_TAG:-latest}
+    build: !reset null
     environment:
       NODE_ENV: production
-    volumes: []
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 512M
+      PORT: "3000"
+    volumes: !reset []
+    restart: always
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
 
   # ── n8n ─────────────────────────────────────────────────────────────────────
   n8n:
-    image: n8nio/n8n:1.48.0           # Pinned — test new versions before upgrading
     restart: always
-    env_file:
-      - .env.prod
-    environment:
-      NODE_ENV: production
-      N8N_PROTOCOL: "https"
-      # Webhook URL must match the public domain so n8n generates correct callback URLs
-      WEBHOOK_URL: "https://${DOMAIN}/n8n/"
-      # Disable diagnostics and update notifications in production
-      N8N_DIAGNOSTICS_ENABLED: "false"
-      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
-    volumes:
-      - n8n_data:/home/node/.n8n
-      - ./n8n/workflows:/home/node/.n8n/workflows:ro
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: 1G
 
-  # ── Redis ───────────────────────────────────────────────────────────────────
+  # ── Redis ────────────────────────────────────────────────────────────────────
   redis:
-    image: redis:7.2.5-alpine         # Pinned — security patches require deliberate upgrades
     restart: always
-    volumes:
-      - redis_data:/data
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512M
 
-volumes:
-  n8n_data:
-    name: ai_video_n8n_data           # Explicit name for `docker volume backup`
-  redis_data:
-    name: ai_video_redis_data
+  # ── Nginx — disabled in prod (Caddy takes over) ───────────────────────────
+  nginx:
+    profiles:
+      - dev-only   # Never starts in prod — Caddy handles routing + SSL

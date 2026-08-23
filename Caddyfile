@@ -1,0 +1,56 @@
+# ── Caddy reverse proxy — Production ─────────────────────────────────────────
+#
+# Caddy automatically provisions and renews Let's Encrypt TLS certificates.
+# Replace {$DOMAIN} with your actual domain — set via environment variable
+# or substitute directly (e.g. app.yourdomain.com).
+#
+# Routes:
+#   /api/*  → Fastify API  (port 3001)
+#   /*      → Next.js      (port 3000)
+#
+# To use: set DOMAIN env var on the VPS and run:
+#   docker run -d --name caddy \
+#     --network automation_public \
+#     -p 80:80 -p 443:443 \
+#     -v caddy_data:/data \
+#     -v caddy_config:/config \
+#     -v $(pwd)/Caddyfile:/etc/caddy/Caddyfile \
+#     -e DOMAIN=app.yourdomain.com \
+#     caddy:2.8.4-alpine
+
+{$DOMAIN} {
+
+    # ── API routes ─────────────────────────────────────────────────────────
+    handle /api/* {
+        uri strip_prefix /api
+        reverse_proxy api:3001 {
+            health_uri /health
+            health_interval 30s
+        }
+    }
+
+    # ── Dashboard (everything else) ────────────────────────────────────────
+    handle {
+        reverse_proxy nextjs:3000 {
+            health_uri /api/health
+            health_interval 30s
+        }
+    }
+
+    # ── Security headers ───────────────────────────────────────────────────
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    # ── Logging ────────────────────────────────────────────────────────────
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+    }
+}

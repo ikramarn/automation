@@ -1,37 +1,66 @@
 import type { FastifyInstance } from 'fastify';
 import fp from 'fastify-plugin';
 import fastifyJwt from '@fastify/jwt';
+import { createLocalJWKSet, createRemoteJWKSet, jwtVerify } from 'jose';
 
 /**
- * Registers @fastify/jwt with the Supabase JWT secret.
+ * Registers JWT verification using Supabase's new asymmetric signing keys.
  *
- * Secret resolution order:
- *   1. `SUPABASE_JWT_SECRET` — preferred; matches Supabase Auth naming
- *   2. `JWT_SECRET`          — fallback alias for local dev / testing
+ * Supabase migrated from a shared HS256 JWT secret to asymmetric RS256/ES256
+ * signing keys in 2025. Tokens are now verified against the public JWKS
+ * endpoint rather than a shared secret.
  *
- * The plugin is wrapped in fastify-plugin so the `fastify.jwt` decorator and
- * `request.jwtVerify()` are available app-wide (not scoped to a sub-context).
+ * JWKS endpoint: https://<project>.supabase.co/auth/v1/.well-known/jwks.json
  *
- * Token verification (signature + exp) is handled by @fastify/jwt internally.
- * Supabase issues HS256 JWTs; we only verify, never sign user tokens.
+ * Falls back to legacy SUPABASE_JWT_SECRET (HS256) if SUPABASE_JWKS_URL is
+ * not set — allows local dev without a real Supabase project.
  *
  * Requirements: 1.4, 18.2
  */
 async function jwtPlugin(app: FastifyInstance): Promise<void> {
-  const secret =
+  const supabaseUrl = process.env['SUPABASE_URL'];
+  const legacySecret =
     process.env['SUPABASE_JWT_SECRET'] ?? process.env['JWT_SECRET'];
 
-  if (!secret) {
+  // Derive JWKS URL from Supabase project URL if not explicitly set
+  const jwksUrl = process.env['SUPABASE_JWKS_URL'] ??
+    (supabaseUrl ? `${supabaseUrl}/auth/v1/.well-known/jwks.json` : null);
+
+  if (!jwksUrl && !legacySecret) {
     throw new Error(
-      'JWT secret is required. Set SUPABASE_JWT_SECRET (or JWT_SECRET) environment variable.',
+      'JWT verification requires either SUPABASE_URL or SUPABASE_JWT_SECRET environment variable.',
     );
   }
 
-  await app.register(fastifyJwt, {
-    secret,
-    // Tokens are issued by Supabase Auth — we verify only, never sign.
-    // @fastify/jwt validates exp, iat, and nbf claims automatically.
-  });
+  if (jwksUrl) {
+    // ── New asymmetric key verification (RS256/ES256) ──────────────────────
+    // Use jose's createRemoteJWKSet which fetches and caches the JWKS endpoint.
+    // The remote key set is cached in memory and refreshed automatically.
+    app.log.info(`JWT: using JWKS endpoint ${jwksUrl}`);
+
+    const JWKS = createRemoteJWKSet(new URL(jwksUrl));
+
+    // Attach a custom verifier to the Fastify instance so authenticate
+    // middleware can call app.verifyJwt(token)
+    app.decorate('verifyJwt', async (token: string) => {
+      const { payload } = await jwtVerify(token, JWKS, {
+        // Supabase issues tokens without a fixed issuer in some configurations;
+        // skip issuer validation to avoid false rejections.
+        clockTolerance: 30, // 30-second clock skew tolerance
+      });
+      return payload;
+    });
+  } else {
+    // ── Legacy HS256 secret (fallback for local dev / old projects) ────────
+    app.log.warn('JWT: using legacy HS256 secret — consider migrating to JWKS');
+
+    await app.register(fastifyJwt, { secret: legacySecret! });
+
+    app.decorate('verifyJwt', async (token: string) => {
+      // Decode and verify using @fastify/jwt's built-in verifier
+      return app.jwt.verify(token);
+    });
+  }
 }
 
 export default fp(jwtPlugin, { name: 'jwt' });

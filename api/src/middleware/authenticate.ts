@@ -49,20 +49,10 @@ export async function authenticate(
 
   let payload: SupabaseJwtPayload;
   try {
-    // @fastify/jwt's jwtVerify reads the token from request.headers.authorization
-    // by default, so we inject it manually when it came from a cookie.
-    // Override the Authorization header in memory so jwtVerify can find it.
-    const originalAuth = request.headers.authorization;
-    request.headers.authorization = `Bearer ${token}`;
-
-    try {
-      // jwtVerify validates signature (against JWT_SECRET env) and exp claim
-      await request.jwtVerify<SupabaseJwtPayload>();
-      payload = request.user as unknown as SupabaseJwtPayload;
-    } finally {
-      // Restore original header so downstream handlers see the real request
-      request.headers.authorization = originalAuth;
-    }
+    // Use the verifyJwt decorator registered by the jwt plugin.
+    // Supports both new JWKS (asymmetric RS256/ES256) and legacy HS256 secret.
+    const verified = await (request.server as any).verifyJwt(token);
+    payload = verified as SupabaseJwtPayload;
   } catch {
     // Do NOT log the token; log only a generic failure message
     request.log.debug('JWT verification failed');
