@@ -1,26 +1,6 @@
-# ── Caddy reverse proxy — Production ─────────────────────────────────────────
-#
-# Caddy automatically provisions and renews Let's Encrypt TLS certificates.
-# Replace {$DOMAIN} with your actual domain — set via environment variable
-# or substitute directly (e.g. app.yourdomain.com).
-#
-# Routes:
-#   /api/*  → Fastify API  (port 3001)
-#   /*      → Next.js      (port 3000)
-#
-# To use: set DOMAIN env var on the VPS and run:
-#   docker run -d --name caddy \
-#     --network automation_public \
-#     -p 80:80 -p 443:443 \
-#     -v caddy_data:/data \
-#     -v caddy_config:/config \
-#     -v $(pwd)/Caddyfile:/etc/caddy/Caddyfile \
-#     -e DOMAIN=app.yourdomain.com \
-#     caddy:2.8.4-alpine
+automatesocials.tech {
 
-{$DOMAIN} {
-
-    # ── API routes ─────────────────────────────────────────────────────────
+    # ── API routes (/api/* → Fastify on port 3001) ─────────────────────────
     handle /api/* {
         uri strip_prefix /api
         reverse_proxy api:3001 {
@@ -29,7 +9,7 @@
         }
     }
 
-    # ── Dashboard (everything else) ────────────────────────────────────────
+    # ── Dashboard (everything else → Next.js on port 3000) ─────────────────
     handle {
         reverse_proxy nextjs:3000 {
             health_uri /api/health
@@ -37,7 +17,7 @@
         }
     }
 
-    # ── Security headers ───────────────────────────────────────────────────
+    # ── Security headers ────────────────────────────────────────────────────
     header {
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
         X-Content-Type-Options "nosniff"
@@ -46,11 +26,8 @@
         -Server
     }
 
-    # ── Logging ────────────────────────────────────────────────────────────
+    # ── Logging ─────────────────────────────────────────────────────────────
     log {
-        output file /var/log/caddy/access.log {
-            roll_size 10mb
-            roll_keep 5
-        }
+        output stdout
     }
 }

@@ -93,7 +93,7 @@ export async function shouldSendEmail(type: string, userId: string): Promise<boo
       }
 
       // Row found — honour the stored preference (default true if column is null).
-      const preference = (data as Record<string, unknown>)[preferenceColumn];
+      const preference = (data as unknown as Record<string, unknown>)[preferenceColumn];
       return preference !== false;
     } catch (err) {
       // Fail open on unexpected errors.

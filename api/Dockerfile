@@ -22,7 +22,7 @@ FROM base AS deps
 # Copy lockfile first so this layer is only invalidated on dependency changes
 COPY package-lock.json package.json ./
 # ci uses lockfile exactly — no implicit upgrades
-RUN npm ci
+RUN npm ci --legacy-peer-deps
 
 # ── Development: hot-reload with tsx ─────────────────────────────────────────
 FROM deps AS development
@@ -45,7 +45,7 @@ ENV NODE_ENV=production
 
 # Install only production dependencies in a fresh layer
 COPY package-lock.json package.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --legacy-peer-deps && npm cache clean --force
 
 # Copy compiled output from build stage
 COPY --from=build /app/dist ./dist
