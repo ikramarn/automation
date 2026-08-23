@@ -15,6 +15,7 @@
 
 import { useState, useEffect } from "react";
 import useSWR from "swr";
+import { createClient } from "@/lib/supabase/client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
@@ -39,13 +40,15 @@ const DEFAULT_PREFS: NotificationPreferences = {
 // ---------------------------------------------------------------------------
 
 async function fetchPreferences(url: string): Promise<NotificationPreferences> {
-  const res = await fetch(url, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-  });
+  const supabase = createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  // 404 means no row yet → return defaults
-  if (res.status === 404) return { ...DEFAULT_PREFS };
+  const res = await fetch(url, { credentials: "include", headers });
+
+  if (res.status === 401 || res.status === 404) return { ...DEFAULT_PREFS };
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -56,7 +59,6 @@ async function fetchPreferences(url: string): Promise<NotificationPreferences> {
   }
 
   const data = (await res.json()) as Partial<NotificationPreferences>;
-  // Merge with defaults so missing keys stay true
   return {
     notify_on_success: data.notify_on_success ?? true,
     notify_on_failure: data.notify_on_failure ?? true,
