@@ -185,7 +185,7 @@ export default function RegisterPage() {
 
       {/* Google OAuth */}
       <a
-        href={`${process.env.NEXT_PUBLIC_API_BASE_URL ?? ""}/auth/google`}
+        href={`https://sqfechtihroodkmncxpc.supabase.co/auth/v1/authorize?provider=google&redirect_to=https://automatesocials.tech/auth/google/callback`}
         className="mb-6 flex w-full items-center justify-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
         aria-label="Continue with Google"
       >
