@@ -141,35 +141,24 @@ export async function socialOAuthPublicRoutes(app: FastifyInstance): Promise<voi
       const provider = PLATFORM_PROVIDER[socialPlatform];
       const scopes = PLATFORM_SCOPES[socialPlatform];
 
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: provider as Parameters<typeof supabase.auth.signInWithOAuth>[0]['provider'],
-        options: {
-          redirectTo,
-          scopes,
-          skipBrowserRedirect: true,
-          queryParams: {
-            // Force authorization code flow (PKCE) instead of implicit flow.
-            // This ensures Google returns ?code= not #access_token= in the callback.
-            access_type: 'offline',
-            response_type: 'code',
-            prompt: 'consent',
-          },
-        },
-      });
+      // Build direct Google OAuth URL instead of going through Supabase.
+      // Supabase's server-side signInWithOAuth uses implicit flow (returns #access_token=)
+      // which doesn't work for server-side callback handling. Direct OAuth returns ?code=.
+      const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      googleAuthUrl.searchParams.set('client_id', process.env['GOOGLE_CLIENT_ID'] ?? '');
+      googleAuthUrl.searchParams.set('redirect_uri', redirectTo);
+      googleAuthUrl.searchParams.set('response_type', 'code');
+      googleAuthUrl.searchParams.set('scope', `openid email profile ${scopes}`);
+      googleAuthUrl.searchParams.set('access_type', 'offline');
+      googleAuthUrl.searchParams.set('prompt', 'consent');
+      // Store platform in state so callback knows which platform to store credentials for
+      googleAuthUrl.searchParams.set('state', socialPlatform);
 
-      if (error || !data?.url) {
-        request.log.error(
-          { platform: socialPlatform, provider, err: error?.message },
-          'Failed to initiate social OAuth flow',
-        );
-        throw new AppError(
-          502,
-          'oauth_initiation_failed',
-          `Failed to initiate OAuth for "${socialPlatform}"`,
-        );
+      if (!process.env['GOOGLE_CLIENT_ID']) {
+        throw new AppError(500, 'configuration_error', 'GOOGLE_CLIENT_ID is not configured');
       }
 
-      return reply.status(302).redirect(data.url);
+      return reply.status(302).redirect(googleAuthUrl.toString());
     },
   );
 
@@ -228,7 +217,6 @@ export async function socialOAuthPublicRoutes(app: FastifyInstance): Promise<voi
       const errorRedirect = `${errorRedirectBase}?error=social_oauth_failed&platform=${socialPlatform}`;
 
       // If OAuth provider returned an error or user denied access → redirect with error.
-      // Previous connection status is retained unchanged (Req 5.11).
       if (query.error || !query.code) {
         request.log.info(
           { platform: socialPlatform, oauthError: query.error },
@@ -237,35 +225,75 @@ export async function socialOAuthPublicRoutes(app: FastifyInstance): Promise<voi
         return reply.status(302).redirect(errorRedirect);
       }
 
+      // Exchange authorization code directly with Google's token endpoint.
+      // We use direct Google OAuth (not Supabase-mediated) for credential storage
+      // so we get provider_refresh_token reliably.
+      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          code: query.code,
+          client_id: process.env['GOOGLE_CLIENT_ID'] ?? '',
+          client_secret: process.env['GOOGLE_CLIENT_SECRET'] ?? '',
+          redirect_uri: process.env[`SOCIAL_OAUTH_REDIRECT_URL_${socialPlatform.toUpperCase()}`]
+            ?? `${process.env['API_URL'] ?? ''}/credentials/social/${socialPlatform}/callback`,
+          grant_type: 'authorization_code',
+        }).toString(),
+      });
+
+      if (!tokenRes.ok) {
+        const tokenErr = await tokenRes.text().catch(() => 'unknown error');
+        request.log.error(
+          { platform: socialPlatform, status: tokenRes.status, err: tokenErr },
+          'Google token exchange failed',
+        );
+        return reply.status(302).redirect(errorRedirect);
+      }
+
+      const tokenData = await tokenRes.json() as {
+        access_token?: string;
+        refresh_token?: string;
+        error?: string;
+      };
+
+      if (tokenData.error || !tokenData.access_token) {
+        request.log.error(
+          { platform: socialPlatform, err: tokenData.error },
+          'Google token exchange returned error',
+        );
+        return reply.status(302).redirect(errorRedirect);
+      }
+
+      // Get user info to determine userId from the Google token
+      const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      });
+
+      if (!userInfoRes.ok) {
+        request.log.error({ platform: socialPlatform }, 'Failed to get user info from Google');
+        return reply.status(302).redirect(errorRedirect);
+      }
+
+      const googleUser = await userInfoRes.json() as { email?: string; id?: string };
+
+      // Look up the Supabase user by email to get the userId
       const supabase = createSupabaseAdminClient();
+      const { data: userList } = await supabase.auth.admin.listUsers();
+      const matchedUser = userList?.users?.find(
+        (u) => u.email === googleUser.email,
+      );
 
-      // Exchange authorization code for session/tokens
-      const { data: sessionData, error: exchangeError } =
-        await supabase.auth.exchangeCodeForSession(query.code);
-
-      if (exchangeError || !sessionData?.session) {
+      if (!matchedUser?.id) {
         request.log.error(
-          { platform: socialPlatform, err: exchangeError?.message },
-          'Social OAuth code exchange failed',
+          { platform: socialPlatform, email: googleUser.email },
+          'Could not match Google user to Supabase user',
         );
         return reply.status(302).redirect(errorRedirect);
       }
 
-      const { session } = sessionData;
-      const userId = session.user?.id ?? (sessionData as { user?: { id?: string } }).user?.id;
-
-      if (!userId) {
-        request.log.error(
-          { platform: socialPlatform },
-          'Could not determine user ID from OAuth session',
-        );
-        return reply.status(302).redirect(errorRedirect);
-      }
-
-      const accessToken = (session as unknown as Record<string, unknown>)['provider_token'] as string | null
-        ?? session.access_token;
-      const refreshToken = (session as unknown as Record<string, unknown>)['provider_refresh_token'] as string | null
-        ?? null;
+      const userId = matchedUser.id;
+      const accessToken = tokenData.access_token;
+      const refreshToken = tokenData.refresh_token ?? null;
 
       const platformCredentials = PLATFORM_CREDENTIALS[socialPlatform];
 
