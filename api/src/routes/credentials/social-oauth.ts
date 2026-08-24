@@ -147,6 +147,13 @@ export async function socialOAuthPublicRoutes(app: FastifyInstance): Promise<voi
           redirectTo,
           scopes,
           skipBrowserRedirect: true,
+          queryParams: {
+            // Force authorization code flow (PKCE) instead of implicit flow.
+            // This ensures Google returns ?code= not #access_token= in the callback.
+            access_type: 'offline',
+            response_type: 'code',
+            prompt: 'consent',
+          },
         },
       });
 
