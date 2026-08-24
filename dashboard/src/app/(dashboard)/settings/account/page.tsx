@@ -48,12 +48,27 @@ async function fetchAccount(url: string): Promise<AccountProfile> {
 }
 
 async function fetchCsrfToken(): Promise<string> {
+  const supabase = createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${API_BASE}/auth/csrf-token`, {
     credentials: "include",
+    headers,
   });
   if (!res.ok) throw new Error("Failed to fetch CSRF token");
   const data = await res.json();
   return (data.csrfToken ?? data.csrf_token ?? data.token ?? "") as string;
+}
+
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  const supabase = createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return headers;
 }
 
 // ---------------------------------------------------------------------------
@@ -156,13 +171,11 @@ function DisplayNameForm({ currentName, onSaved }: DisplayNameFormProps) {
 
     try {
       const csrfToken = await fetchCsrfToken();
+      const authHeaders = await getAuthHeaders();
       const res = await fetch(`${API_BASE}/account`, {
         method: "PUT",
         credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": csrfToken,
-        },
+        headers: { ...authHeaders, "X-CSRF-Token": csrfToken },
         body: JSON.stringify({ display_name: name.trim() }),
       });
 
@@ -231,13 +244,11 @@ function EmailChangeForm({ currentEmail }: EmailChangeFormProps) {
 
     try {
       const csrfToken = await fetchCsrfToken();
+      const authHeaders = await getAuthHeaders();
       const res = await fetch(`${API_BASE}/account`, {
         method: "PUT",
         credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": csrfToken,
-        },
+        headers: { ...authHeaders, "X-CSRF-Token": csrfToken },
         body: JSON.stringify({ email: email.trim() }),
       });
 
@@ -306,13 +317,11 @@ function PasswordChangeForm() {
 
     try {
       const csrfToken = await fetchCsrfToken();
+      const authHeaders = await getAuthHeaders();
       const res = await fetch(`${API_BASE}/account/password`, {
         method: "PUT",
         credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": csrfToken,
-        },
+        headers: { ...authHeaders, "X-CSRF-Token": csrfToken },
         body: JSON.stringify({
           current_password: currentPassword,
           new_password: newPassword,
@@ -405,13 +414,11 @@ function DeleteAccountForm({ userEmail }: DeleteAccountFormProps) {
 
     try {
       const csrfToken = await fetchCsrfToken();
+      const authHeaders = await getAuthHeaders();
       const res = await fetch(`${API_BASE}/account`, {
         method: "DELETE",
         credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": csrfToken,
-        },
+        headers: { ...authHeaders, "X-CSRF-Token": csrfToken },
         body: JSON.stringify({ email: confirmEmail }),
       });
 
