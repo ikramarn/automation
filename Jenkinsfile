@@ -26,10 +26,6 @@
 pipeline {
     agent any
 
-    tools {
-        nodejs 'node-20'   // Node.js 20 LTS — configure in Global Tool Configuration
-    }
-
     environment {
         REGISTRY         = 'ikcloudky6/automation'
         IMAGE_TAG        = "${env.GIT_COMMIT?.take(8) ?: 'latest'}"
@@ -52,17 +48,37 @@ pipeline {
             }
         }
 
-        // ── 2. Test ────────────────────────────────────────────────────────
+        // ── 2. Setup Node.js ──────────────────────────────────────────────
+        stage('Setup Node.js') {
+            steps {
+                // Install Node.js 20 via nvm if not already available
+                sh '''
+                    export NVM_DIR="$HOME/.nvm"
+                    if [ ! -f "$NVM_DIR/nvm.sh" ]; then
+                        curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+                    fi
+                    . "$NVM_DIR/nvm.sh"
+                    nvm install 20
+                    nvm alias default 20
+                    nvm use 20
+                    node --version
+                    npm --version
+                '''
+            }
+        }
+
+        // ── 3. Test ────────────────────────────────────────────────────────
         stage('Test') {
             parallel {
 
                 stage('API Tests') {
                     steps {
-                        dir('api') {
-                            sh 'npm ci'
-                            sh 'npm run lint'
-                            sh 'npm test'
-                        }
+                        sh '''
+                            export NVM_DIR="$HOME/.nvm"
+                            . "$NVM_DIR/nvm.sh"
+                            nvm use 20
+                            cd api && npm ci && npm run lint && npm test
+                        '''
                     }
                     post {
                         always {
@@ -73,33 +89,34 @@ pipeline {
 
                 stage('Dashboard Tests') {
                     steps {
-                        dir('dashboard') {
-                            sh 'npm ci --legacy-peer-deps'
-                            sh 'npm run lint'
-                            sh 'npm test'
-                        }
+                        sh '''
+                            export NVM_DIR="$HOME/.nvm"
+                            . "$NVM_DIR/nvm.sh"
+                            nvm use 20
+                            cd dashboard && npm ci --legacy-peer-deps && npm run lint
+                        '''
                     }
                 }
 
                 stage('Pipeline Engine Tests') {
                     steps {
-                        dir('n8n') {
-                            sh '''
-                                if [ -f package.json ]; then
-                                    npm ci
-                                    npm test
-                                else
-                                    echo "No n8n package.json — skipping"
-                                fi
-                            '''
-                        }
+                        sh '''
+                            export NVM_DIR="$HOME/.nvm"
+                            . "$NVM_DIR/nvm.sh"
+                            nvm use 20
+                            if [ -f n8n/package.json ]; then
+                                cd n8n && npm ci && npm test
+                            else
+                                echo "No n8n package.json — skipping"
+                            fi
+                        '''
                     }
                 }
 
             }
         }
 
-        // ── 3. Build Images ────────────────────────────────────────────────
+        // ── 4. Build Images ────────────────────────────────────────────────
         stage('Build Images') {
             when {
                 anyOf {
@@ -127,6 +144,9 @@ pipeline {
                     steps {
                         withCredentials([file(credentialsId: 'DASHBOARD_BUILD_ENV', variable: 'DASHBOARD_ENV_FILE')]) {
                             sh """
+                                export NVM_DIR="\$HOME/.nvm"
+                                . "\$NVM_DIR/nvm.sh"
+                                nvm use 20
                                 # Source the env file to get build args
                                 set -a && . \${DASHBOARD_ENV_FILE} && set +a
                                 docker build \\
