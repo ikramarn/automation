@@ -32,7 +32,19 @@ async function jwtPlugin(app: FastifyInstance): Promise<void> {
     );
   }
 
-  if (jwksUrl) {
+  if (legacySecret) {
+    // ── Legacy HS256 secret (fallback for local dev / old projects) ────────
+    // Checked first so that test environments (which set SUPABASE_JWT_SECRET)
+    // always use @fastify/jwt and get app.jwt.sign for token generation.
+    app.log.warn('JWT: using legacy HS256 secret — consider migrating to JWKS');
+
+    await app.register(fastifyJwt, { secret: legacySecret });
+
+    app.decorate('verifyJwt', async (token: string) => {
+      // Decode and verify using @fastify/jwt's built-in verifier
+      return app.jwt.verify(token);
+    });
+  } else if (jwksUrl) {
     // ── New asymmetric key verification (RS256/ES256) ──────────────────────
     // Use jose's createRemoteJWKSet which fetches and caches the JWKS endpoint.
     // The remote key set is cached in memory and refreshed automatically.
@@ -51,15 +63,9 @@ async function jwtPlugin(app: FastifyInstance): Promise<void> {
       return payload;
     });
   } else {
-    // ── Legacy HS256 secret (fallback for local dev / old projects) ────────
-    app.log.warn('JWT: using legacy HS256 secret — consider migrating to JWKS');
-
-    await app.register(fastifyJwt, { secret: legacySecret! });
-
-    app.decorate('verifyJwt', async (token: string) => {
-      // Decode and verify using @fastify/jwt's built-in verifier
-      return app.jwt.verify(token);
-    });
+    throw new Error(
+      'JWT verification requires either SUPABASE_URL or SUPABASE_JWT_SECRET environment variable.',
+    );
   }
 }
 

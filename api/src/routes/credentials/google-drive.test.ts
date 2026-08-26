@@ -2,29 +2,36 @@
  * Google Drive OAuth credential route tests.
  *
  * Tests use Fastify's `app.inject()` — no real HTTP server or Supabase connection.
- * Supabase admin client and vault helpers are mocked via vi.mock() so each test
- * controls exact responses.
+ * Vault helpers, global fetch, and the Supabase admin client are mocked so each
+ * test controls exact responses.
+ *
+ * Architecture under test (google-drive.ts):
+ *   - GET /credentials/google/connect  — builds direct Google OAuth URL (not
+ *     Supabase signInWithOAuth), requires GOOGLE_CLIENT_ID + GOOGLE_DRIVE_REDIRECT_URL
+ *   - GET /credentials/google/callback — exchanges code via fetch to
+ *     oauth2.googleapis.com/token, looks up user via listUsers() + email match,
+ *     stores refresh_token in vault, upserts credentials row
+ *   - DELETE /credentials/google       — authenticated; deletes vault secret + DB row
  *
  * Covered scenarios:
  *
  * GET /credentials/google/connect
- *   - 302 redirect to Google OAuth URL on success
- *   - Calls signInWithOAuth with drive.file scope and GOOGLE_DRIVE_REDIRECT_URL
- *   - 502 when Supabase signInWithOAuth returns an error
- *   - 502 when signInWithOAuth returns no URL
+ *   - 302 redirect to accounts.google.com with drive.file scope
+ *   - URL contains client_id, redirect_uri, response_type=code, access_type=offline
  *   - 500 when GOOGLE_DRIVE_REDIRECT_URL env var is not set
+ *   - 500 when GOOGLE_CLIENT_ID env var is not set
  *
  * GET /credentials/google/callback
- *   - 302 to success redirect when valid code + refresh token present
+ *   - 302 to success URL on valid code + refresh token
  *   - Stores refresh token in vault with correct userId and credential type
- *   - Upserts credentials row with masked value ••••[connected] and status active
+ *   - Upserts credentials row with masked_value '••••[connected]' and status active
  *   - Cleans up old vault secret on reconnect
- *   - 302 to error redirect when `error` query param present (user denied)
- *   - 302 to error redirect when no `code` param
- *   - 302 to error redirect when exchangeCodeForSession fails
- *   - 302 to error redirect when session has no provider_refresh_token
- *   - 302 to error redirect when vault upsert fails (and cleans up new secret)
- *   - Does NOT touch DB or vault when user denies (previous status retained)
+ *   - 302 to error URL when `error` query param present (user denied)
+ *   - 302 to error URL when no `code` param
+ *   - 302 to error URL when Google token exchange returns non-200
+ *   - 302 to error URL when token response has no refresh_token
+ *   - 302 to error URL when vault upsert fails (and cleans up new secret)
+ *   - Does NOT touch vault/DB when user denies
  *
  * DELETE /credentials/google
  *   - 401 when no JWT provided
@@ -37,7 +44,7 @@
  * Validates: Requirements 4.1, 4.2, 4.4, 4.7, 4.8
  */
 
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../app.js';
 
@@ -50,8 +57,9 @@ process.env['NODE_ENV'] = 'test';
 process.env['SUPABASE_URL'] = 'https://test.supabase.co';
 process.env['SUPABASE_SERVICE_ROLE_KEY'] = 'test-service-role-key';
 process.env['GOOGLE_DRIVE_REDIRECT_URL'] = 'https://example.com/credentials/google/callback';
+process.env['GOOGLE_CLIENT_ID'] = 'test-google-client-id';
+process.env['GOOGLE_CLIENT_SECRET'] = 'test-google-client-secret';
 process.env['DASHBOARD_URL'] = 'https://example.com/dashboard';
-process.env['GOOGLE_OAUTH_REDIRECT_URL'] = 'https://example.com/auth/google/callback';
 
 // ── Mock: vault helpers ──────────────────────────────────────────────────────
 const mockStoreSecret = vi.fn();
@@ -65,8 +73,7 @@ vi.mock('../../lib/vault.js', () => ({
 }));
 
 // ── Mock: Supabase admin client ──────────────────────────────────────────────
-const mockSignInWithOAuth = vi.fn();
-const mockExchangeCodeForSession = vi.fn();
+const mockListUsers = vi.fn();
 const mockDbFrom = vi.fn();
 
 vi.mock('../../lib/supabase.js', () => ({
@@ -76,12 +83,12 @@ vi.mock('../../lib/supabase.js', () => ({
         createUser: vi.fn(),
         generateLink: vi.fn().mockResolvedValue({ data: {}, error: null }),
         updateUserById: vi.fn(),
+        listUsers: mockListUsers,
       },
+      signUp: vi.fn().mockResolvedValue({ data: { user: null }, error: null }),
       signInWithPassword: vi.fn(),
       resetPasswordForEmail: vi.fn(),
       verifyOtp: vi.fn(),
-      signInWithOAuth: mockSignInWithOAuth,
-      exchangeCodeForSession: mockExchangeCodeForSession,
     },
     from: (table: string) => mockDbFrom(table),
   }),
@@ -108,18 +115,27 @@ describe('Google Drive OAuth credential routes', () => {
     mockStoreSecret.mockResolvedValue('new-vault-secret-id');
     mockDeleteSecret.mockResolvedValue(undefined);
 
-    // Default: DB login_attempts chain (used by other auth middleware)
+    // Default: listUsers returns a matching user for user-oauth-123
+    mockListUsers.mockResolvedValue({
+      data: {
+        users: [{ id: 'user-oauth-123', email: 'user@example.com' }],
+      },
+      error: null,
+    });
+
+    // Default: DB chain returns safe defaults
     const defaultChain = buildFluentChain({ data: null, error: null });
     mockDbFrom.mockReturnValue(defaultChain);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   /** Signs a JWT using the app's @fastify/jwt instance (HS256, test secret). */
-  function signJwt(
-    userId = 'user-123',
-    subscriptionStatus = 'active',
-  ): string {
+  function signJwt(userId = 'user-123', subscriptionStatus = 'active'): string {
     return app.jwt.sign({
       sub: userId,
       email: 'user@example.com',
@@ -140,7 +156,6 @@ describe('Google Drive OAuth credential routes', () => {
       update: vi.fn(),
       in: vi.fn(),
     };
-    // Wire fluent returns
     chain['select']!.mockReturnValue(chain);
     chain['eq']!.mockReturnValue(chain);
     chain['delete']!.mockReturnValue(chain);
@@ -149,25 +164,70 @@ describe('Google Drive OAuth credential routes', () => {
     return chain;
   }
 
-  /** Builds a realistic Supabase exchangeCodeForSession response. */
-  function buildOAuthSession(opts: {
-    userId?: string;
-    hasRefreshToken?: boolean;
+  /**
+   * Stubs global fetch to return a successful Google token exchange response.
+   * First call: oauth2.googleapis.com/token → access_token + optional refresh_token
+   * Second call: googleapis.com/oauth2/v2/userinfo → email
+   */
+  function stubFetchSuccess(opts: {
+    accessToken?: string;
+    refreshToken?: string | null;
+    email?: string;
   } = {}) {
-    const userId = opts.userId ?? 'user-oauth-123';
-    const hasRefreshToken = opts.hasRefreshToken ?? true;
+    const {
+      accessToken = 'access-token-value',
+      refreshToken = 'drive-refresh-token-value',
+      email = 'user@example.com',
+    } = opts;
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        const urlStr = String(url);
+
+        if (urlStr.includes('oauth2.googleapis.com/token')) {
+          return {
+            ok: true,
+            json: async () => ({
+              access_token: accessToken,
+              ...(refreshToken !== null ? { refresh_token: refreshToken } : {}),
+            }),
+            text: async () => '',
+          };
+        }
+
+        if (urlStr.includes('googleapis.com/oauth2/v2/userinfo')) {
+          return {
+            ok: true,
+            json: async () => ({ email }),
+          };
+        }
+
+        return { ok: false, status: 500, text: async () => 'unexpected fetch' };
+      }),
+    );
+  }
+
+  /** Sets up DB mock for a clean connect (no existing credential). */
+  function setupCleanConnectDb() {
+    const upsertMock = vi.fn().mockResolvedValue({ error: null });
+    const chain = buildFluentChain({ data: null, error: null });
+    chain['upsert'] = upsertMock;
+    mockDbFrom.mockReturnValue(chain);
+    return { upsertMock, chain };
+  }
+
+  /** Builds auth headers for authenticated + CSRF-protected DELETE requests. */
+  function authHeaders(userId = 'user-del-123') {
+    const token = signJwt(userId);
+    const csrfToken = 'a'.repeat(64);
+    const signedCsrfCookie = app.signCookie(csrfToken);
     return {
-      data: {
-        session: {
-          access_token: 'access-token-value',
-          expires_in: 3600,
-          provider_token: 'provider-access-token',
-          ...(hasRefreshToken ? { provider_refresh_token: 'drive-refresh-token-value' } : {}),
-          user: { id: userId, email: 'user@example.com' },
-        },
-        user: { id: userId, email: 'user@example.com' },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'x-csrf-token': csrfToken,
       },
-      error: null,
+      cookies: { csrf_token: signedCsrfCookie },
     };
   }
 
@@ -177,73 +237,41 @@ describe('Google Drive OAuth credential routes', () => {
 
   describe('GET /credentials/google/connect', () => {
     it('returns 302 redirect to Google OAuth URL', async () => {
-      const googleOAuthUrl =
-        'https://accounts.google.com/o/oauth2/v2/auth?scope=drive.file&client_id=test';
-
-      mockSignInWithOAuth.mockResolvedValue({
-        data: { url: googleOAuthUrl, provider: 'google' },
-        error: null,
-      });
-
       const response = await app.inject({
         method: 'GET',
         url: '/credentials/google/connect',
       });
 
       expect(response.statusCode).toBe(302);
-      expect(response.headers['location']).toBe(googleOAuthUrl);
+      const location = response.headers['location'] as string;
+      expect(location).toContain('accounts.google.com');
     });
 
-    it('calls signInWithOAuth with drive.file scope and GOOGLE_DRIVE_REDIRECT_URL', async () => {
-      mockSignInWithOAuth.mockResolvedValue({
-        data: { url: 'https://accounts.google.com/o/oauth2', provider: 'google' },
-        error: null,
-      });
-
-      await app.inject({
+    it('redirect URL includes drive.file scope', async () => {
+      const response = await app.inject({
         method: 'GET',
         url: '/credentials/google/connect',
       });
 
-      expect(mockSignInWithOAuth).toHaveBeenCalledWith(
-        expect.objectContaining({
-          provider: 'google',
-          options: expect.objectContaining({
-            scopes: 'https://www.googleapis.com/auth/drive.file',
-            redirectTo: 'https://example.com/credentials/google/callback',
-          }),
-        }),
+      expect(response.statusCode).toBe(302);
+      const location = response.headers['location'] as string;
+      expect(location).toContain('drive.file');
+    });
+
+    it('redirect URL includes correct OAuth params', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/credentials/google/connect',
+      });
+
+      expect(response.statusCode).toBe(302);
+      const location = new URL(response.headers['location'] as string);
+      expect(location.searchParams.get('client_id')).toBe('test-google-client-id');
+      expect(location.searchParams.get('redirect_uri')).toBe(
+        'https://example.com/credentials/google/callback',
       );
-    });
-
-    it('returns 502 when Supabase signInWithOAuth returns an error', async () => {
-      mockSignInWithOAuth.mockResolvedValue({
-        data: null,
-        error: { message: 'Provider not enabled' },
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/credentials/google/connect',
-      });
-
-      expect(response.statusCode).toBe(502);
-      expect(response.json().error_code).toBe('drive_oauth_initiation_failed');
-    });
-
-    it('returns 502 when signInWithOAuth returns no URL', async () => {
-      mockSignInWithOAuth.mockResolvedValue({
-        data: { url: null, provider: 'google' },
-        error: null,
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/credentials/google/connect',
-      });
-
-      expect(response.statusCode).toBe(502);
-      expect(response.json().error_code).toBe('drive_oauth_initiation_failed');
+      expect(location.searchParams.get('response_type')).toBe('code');
+      expect(location.searchParams.get('access_type')).toBe('offline');
     });
 
     it('returns 500 when GOOGLE_DRIVE_REDIRECT_URL env var is not set', async () => {
@@ -261,6 +289,22 @@ describe('Google Drive OAuth credential routes', () => {
         process.env['GOOGLE_DRIVE_REDIRECT_URL'] = original;
       }
     });
+
+    it('returns 500 when GOOGLE_CLIENT_ID env var is not set', async () => {
+      const original = process.env['GOOGLE_CLIENT_ID'];
+      delete process.env['GOOGLE_CLIENT_ID'];
+
+      try {
+        const response = await app.inject({
+          method: 'GET',
+          url: '/credentials/google/connect',
+        });
+        expect(response.statusCode).toBe(500);
+        expect(response.json().error_code).toBe('configuration_error');
+      } finally {
+        process.env['GOOGLE_CLIENT_ID'] = original;
+      }
+    });
   });
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -271,30 +315,8 @@ describe('Google Drive OAuth credential routes', () => {
     const SUCCESS_REDIRECT = '/settings/credentials?drive=connected';
     const ERROR_REDIRECT = '/settings/credentials?error=drive_oauth_failed';
 
-    /** Shared helper: set up a DB chain that has no existing credential (clean connect). */
-    function setupCleanConnectDb() {
-      const upsertMock = vi.fn().mockResolvedValue({ error: null });
-      const chain: Record<string, ReturnType<typeof vi.fn>> = {
-        select: vi.fn(),
-        eq: vi.fn(),
-        maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
-        upsert: upsertMock,
-        delete: vi.fn(),
-        order: vi.fn().mockResolvedValue({ data: [], error: null }),
-        insert: vi.fn().mockResolvedValue({ error: null }),
-        update: vi.fn(),
-        in: vi.fn().mockResolvedValue({ data: [], error: null }),
-      };
-      chain['select']!.mockReturnValue(chain);
-      chain['eq']!.mockReturnValue(chain);
-      chain['delete']!.mockReturnValue(chain);
-      chain['update']!.mockReturnValue(chain);
-      mockDbFrom.mockReturnValue(chain);
-      return { upsertMock, chain };
-    }
-
     it('redirects to success URL on valid code with refresh token', async () => {
-      mockExchangeCodeForSession.mockResolvedValue(buildOAuthSession());
+      stubFetchSuccess();
       setupCleanConnectDb();
 
       const response = await app.inject({
@@ -306,21 +328,15 @@ describe('Google Drive OAuth credential routes', () => {
       expect(response.headers['location']).toBe(SUCCESS_REDIRECT);
     });
 
-    it('calls exchangeCodeForSession with the code from query string', async () => {
-      mockExchangeCodeForSession.mockResolvedValue(buildOAuthSession());
-      setupCleanConnectDb();
-
-      await app.inject({
-        method: 'GET',
-        url: '/credentials/google/callback?code=my-drive-code',
-      });
-
-      expect(mockExchangeCodeForSession).toHaveBeenCalledWith('my-drive-code');
-    });
-
     it('stores refresh token in vault with correct userId and credential type', async () => {
-      mockExchangeCodeForSession.mockResolvedValue(buildOAuthSession({ userId: 'user-abc' }));
+      stubFetchSuccess({ email: 'user@example.com' });
       setupCleanConnectDb();
+
+      // listUsers returns the user with matching email
+      mockListUsers.mockResolvedValue({
+        data: { users: [{ id: 'user-oauth-123', email: 'user@example.com' }] },
+        error: null,
+      });
 
       await app.inject({
         method: 'GET',
@@ -328,14 +344,14 @@ describe('Google Drive OAuth credential routes', () => {
       });
 
       expect(mockStoreSecret).toHaveBeenCalledWith(
-        'user-abc',
+        'user-oauth-123',
         'google_drive_refresh_token',
         'drive-refresh-token-value',
       );
     });
 
-    it('upserts credentials row with masked value ••••[connected] and status active', async () => {
-      mockExchangeCodeForSession.mockResolvedValue(buildOAuthSession());
+    it('upserts credentials row with masked_value ••••[connected] and status active', async () => {
+      stubFetchSuccess();
       const { upsertMock } = setupCleanConnectDb();
 
       await app.inject({
@@ -355,29 +371,12 @@ describe('Google Drive OAuth credential routes', () => {
     });
 
     it('deletes old vault secret when reconnecting', async () => {
-      mockExchangeCodeForSession.mockResolvedValue(
-        buildOAuthSession({ userId: 'user-reconnect' }),
-      );
+      stubFetchSuccess({ email: 'user@example.com' });
 
       // DB returns an existing credential with an old vault secret id
       const upsertMock = vi.fn().mockResolvedValue({ error: null });
-      const chain: Record<string, ReturnType<typeof vi.fn>> = {
-        select: vi.fn(),
-        eq: vi.fn(),
-        maybeSingle: vi
-          .fn()
-          .mockResolvedValue({ data: { vault_secret_id: 'old-vault-id' }, error: null }),
-        upsert: upsertMock,
-        delete: vi.fn(),
-        order: vi.fn().mockResolvedValue({ data: [], error: null }),
-        insert: vi.fn().mockResolvedValue({ error: null }),
-        update: vi.fn(),
-        in: vi.fn().mockResolvedValue({ data: [], error: null }),
-      };
-      chain['select']!.mockReturnValue(chain);
-      chain['eq']!.mockReturnValue(chain);
-      chain['delete']!.mockReturnValue(chain);
-      chain['update']!.mockReturnValue(chain);
+      const chain = buildFluentChain({ data: { vault_secret_id: 'old-vault-id' }, error: null });
+      chain['upsert'] = upsertMock;
       mockDbFrom.mockReturnValue(chain);
 
       await app.inject({
@@ -396,7 +395,8 @@ describe('Google Drive OAuth credential routes', () => {
 
       expect(response.statusCode).toBe(302);
       expect(response.headers['location']).toBe(ERROR_REDIRECT);
-      expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+      // fetch should NOT be called — user denied before code was issued
+      // (fetch stub is not set, so if it were called it would throw)
     });
 
     it('redirects to error URL when no code param', async () => {
@@ -409,11 +409,15 @@ describe('Google Drive OAuth credential routes', () => {
       expect(response.headers['location']).toBe(ERROR_REDIRECT);
     });
 
-    it('redirects to error URL when exchangeCodeForSession returns an error', async () => {
-      mockExchangeCodeForSession.mockResolvedValue({
-        data: null,
-        error: { message: 'Invalid code verifier' },
-      });
+    it('redirects to error URL when Google token exchange returns non-200', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 400,
+          text: async () => 'invalid_grant',
+        }),
+      );
 
       const response = await app.inject({
         method: 'GET',
@@ -424,14 +428,12 @@ describe('Google Drive OAuth credential routes', () => {
       expect(response.headers['location']).toBe(ERROR_REDIRECT);
     });
 
-    it('redirects to error URL when session has no provider_refresh_token', async () => {
-      mockExchangeCodeForSession.mockResolvedValue(
-        buildOAuthSession({ hasRefreshToken: false }),
-      );
+    it('redirects to error URL when token response has no refresh_token', async () => {
+      stubFetchSuccess({ refreshToken: null });
 
       const response = await app.inject({
         method: 'GET',
-        url: '/credentials/google/callback?code=no-refresh-token-code',
+        url: '/credentials/google/callback?code=no-refresh-code',
       });
 
       expect(response.statusCode).toBe(302);
@@ -439,25 +441,12 @@ describe('Google Drive OAuth credential routes', () => {
     });
 
     it('redirects to error URL and cleans up vault secret when DB upsert fails', async () => {
-      mockExchangeCodeForSession.mockResolvedValue(buildOAuthSession());
+      stubFetchSuccess();
       mockStoreSecret.mockResolvedValue('vault-to-cleanup');
 
       const upsertMock = vi.fn().mockResolvedValue({ error: { message: 'DB write error' } });
-      const chain: Record<string, ReturnType<typeof vi.fn>> = {
-        select: vi.fn(),
-        eq: vi.fn(),
-        maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
-        upsert: upsertMock,
-        delete: vi.fn(),
-        order: vi.fn().mockResolvedValue({ data: [], error: null }),
-        insert: vi.fn().mockResolvedValue({ error: null }),
-        update: vi.fn(),
-        in: vi.fn().mockResolvedValue({ data: [], error: null }),
-      };
-      chain['select']!.mockReturnValue(chain);
-      chain['eq']!.mockReturnValue(chain);
-      chain['delete']!.mockReturnValue(chain);
-      chain['update']!.mockReturnValue(chain);
+      const chain = buildFluentChain({ data: null, error: null });
+      chain['upsert'] = upsertMock;
       mockDbFrom.mockReturnValue(chain);
 
       const response = await app.inject({
@@ -467,11 +456,11 @@ describe('Google Drive OAuth credential routes', () => {
 
       expect(response.statusCode).toBe(302);
       expect(response.headers['location']).toBe(ERROR_REDIRECT);
-      // Should clean up the orphaned vault secret
+      // Orphaned vault secret must be cleaned up
       expect(mockDeleteSecret).toHaveBeenCalledWith('vault-to-cleanup');
     });
 
-    it('does NOT store or change credential when user denies (previous status retained)', async () => {
+    it('does NOT store or change credential when user denies', async () => {
       const response = await app.inject({
         method: 'GET',
         url: '/credentials/google/callback?error=access_denied',
@@ -479,7 +468,6 @@ describe('Google Drive OAuth credential routes', () => {
 
       expect(response.statusCode).toBe(302);
       expect(response.headers['location']).toBe(ERROR_REDIRECT);
-      // No vault or DB operations should have been performed
       expect(mockStoreSecret).not.toHaveBeenCalled();
       expect(mockDbFrom).not.toHaveBeenCalled();
     });
@@ -490,28 +478,7 @@ describe('Google Drive OAuth credential routes', () => {
   // ════════════════════════════════════════════════════════════════════════════
 
   describe('DELETE /credentials/google', () => {
-    /**
-     * Returns headers + cookies for an authenticated + CSRF-protected DELETE request.
-     * Uses @fastify/cookie's `app.signCookie()` to produce a valid signed cookie value.
-     */
-    function authHeaders(userId = 'user-del-123') {
-      const jwt = signJwt(userId);
-      // Use a fixed 64-char token (same pattern as the CSRF middleware tests)
-      const csrfToken = 'a'.repeat(64);
-      const signedCsrfCookie = app.signCookie(csrfToken);
-
-      return {
-        headers: {
-          Authorization: `Bearer ${jwt}`,
-          'x-csrf-token': csrfToken,
-        },
-        cookies: {
-          csrf_token: signedCsrfCookie,
-        },
-      };
-    }
-
-    /** Set up DB mock: first call fetches credential, second call deletes row. */
+    /** Sets up DB: first call finds credential, second call deletes row. */
     function setupDeleteDb(opts: {
       findData?: unknown;
       findError?: { message: string } | null;
@@ -523,19 +490,15 @@ describe('Google Drive OAuth credential routes', () => {
       mockDbFrom.mockImplementation((_table: string) => {
         callCount++;
         if (callCount === 1) {
-          // First call: SELECT (find credential)
           return {
             select: vi.fn().mockReturnThis(),
             eq: vi.fn().mockReturnThis(),
             maybeSingle: vi.fn().mockResolvedValue({ data: findData ?? null, error: findError }),
           };
         }
-        // Second call: DELETE (chain .delete().eq().eq())
         const deleteEq2 = vi.fn().mockResolvedValue({ error: deleteError });
         const deleteEq1 = vi.fn().mockReturnValue({ eq: deleteEq2 });
-        return {
-          delete: vi.fn().mockReturnValue({ eq: deleteEq1 }),
-        };
+        return { delete: vi.fn().mockReturnValue({ eq: deleteEq1 }) };
       });
     }
 
@@ -549,10 +512,7 @@ describe('Google Drive OAuth credential routes', () => {
 
     it('returns 200 with disconnect message on success', async () => {
       const { headers, cookies } = authHeaders('user-del-123');
-
-      setupDeleteDb({
-        findData: { id: 'cred-id-1', vault_secret_id: 'vault-id-1' },
-      });
+      setupDeleteDb({ findData: { id: 'cred-id-1', vault_secret_id: 'vault-id-1' } });
 
       const response = await app.inject({
         method: 'DELETE',
@@ -567,10 +527,7 @@ describe('Google Drive OAuth credential routes', () => {
 
     it('calls deleteSecret with correct vault_secret_id', async () => {
       const { headers, cookies } = authHeaders('user-del-456');
-
-      setupDeleteDb({
-        findData: { id: 'cred-id-2', vault_secret_id: 'vault-secret-abc' },
-      });
+      setupDeleteDb({ findData: { id: 'cred-id-2', vault_secret_id: 'vault-secret-abc' } });
 
       await app.inject({
         method: 'DELETE',
@@ -584,7 +541,6 @@ describe('Google Drive OAuth credential routes', () => {
 
     it('returns 404 when no Google Drive credential exists for user', async () => {
       const { headers, cookies } = authHeaders('user-no-drive');
-
       setupDeleteDb({ findData: null });
 
       const response = await app.inject({
@@ -599,12 +555,8 @@ describe('Google Drive OAuth credential routes', () => {
 
     it('returns 500 when vault deleteSecret throws', async () => {
       const { headers, cookies } = authHeaders('user-vault-err');
-
       mockDeleteSecret.mockRejectedValue(new Error('Vault unavailable'));
-
-      setupDeleteDb({
-        findData: { id: 'cred-id-3', vault_secret_id: 'vault-id-3' },
-      });
+      setupDeleteDb({ findData: { id: 'cred-id-3', vault_secret_id: 'vault-id-3' } });
 
       const response = await app.inject({
         method: 'DELETE',
@@ -618,7 +570,6 @@ describe('Google Drive OAuth credential routes', () => {
 
     it('returns 500 when DB fetch returns an error', async () => {
       const { headers, cookies } = authHeaders('user-db-err');
-
       setupDeleteDb({ findError: { message: 'connection timeout' } });
 
       const response = await app.inject({

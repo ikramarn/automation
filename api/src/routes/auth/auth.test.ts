@@ -35,6 +35,7 @@ process.env['SUPABASE_SERVICE_ROLE_KEY'] = 'test-service-role-key';
 // `from()` table query chain (for loginAttempts lockout checks).
 
 const mockCreateUser = vi.fn();
+const mockSignUp = vi.fn();
 const mockGenerateLink = vi.fn();
 const mockSignInWithPassword = vi.fn();
 const mockResetPasswordForEmail = vi.fn();
@@ -71,6 +72,7 @@ vi.mock('../../lib/supabase.js', () => ({
         generateLink: mockGenerateLink,
         updateUserById: mockUpdateUserById,
       },
+      signUp: mockSignUp,
       signInWithPassword: mockSignInWithPassword,
       resetPasswordForEmail: mockResetPasswordForEmail,
       verifyOtp: mockVerifyOtp,
@@ -95,11 +97,14 @@ describe('Auth routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Default: generateLink succeeds (non-fatal, always called after createUser)
+    // Default: generateLink succeeds (non-fatal, kept for any legacy code paths)
     mockGenerateLink.mockResolvedValue({ data: {}, error: null });
+    // Default: signUp succeeds — register route now uses signUp (not admin.createUser)
+    mockSignUp.mockResolvedValue({
+      data: { user: { id: 'user-123', email: 'test@example.com' } },
+      error: null,
+    });
     // Default: no failed login attempts in the window → account not locked.
-    // The loginAttempts module calls .from().select().eq().eq().gte().order()
-    // and then INSERT. Set a default for order (SELECT) and insert.
     mockDbOrder.mockResolvedValue({ data: [], error: null });
     mockDbInsert.mockResolvedValue({ error: null });
   });
@@ -108,7 +113,7 @@ describe('Auth routes', () => {
 
   describe('POST /auth/register', () => {
     it('returns 201 with valid credentials', async () => {
-      mockCreateUser.mockResolvedValue({
+      mockSignUp.mockResolvedValue({
         data: { user: { id: 'user-123', email: 'test@example.com' } },
         error: null,
       });
@@ -170,7 +175,7 @@ describe('Auth routes', () => {
     });
 
     it('returns 409 when email is already registered', async () => {
-      mockCreateUser.mockResolvedValue({
+      mockSignUp.mockResolvedValue({
         data: null,
         error: { message: 'User already registered' },
       });
@@ -186,7 +191,7 @@ describe('Auth routes', () => {
     });
 
     it('returns 400 when Supabase returns a generic error', async () => {
-      mockCreateUser.mockResolvedValue({
+      mockSignUp.mockResolvedValue({
         data: null,
         error: { message: 'Something went wrong' },
       });

@@ -37,6 +37,11 @@ async function buildTestApp(): Promise<FastifyInstance> {
 
   await app.register(fastifyJwt, { secret: JWT_SECRET });
 
+  // Add the verifyJwt decorator that authenticate middleware relies on
+  app.decorate('verifyJwt', async (token: string) => {
+    return app.jwt.verify(token);
+  });
+
   registerErrorHandler(app);
 
   // Protected route: apply authenticate as a preHandler

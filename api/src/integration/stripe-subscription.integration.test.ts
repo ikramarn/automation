@@ -75,6 +75,10 @@ const { mockFrom } = vi.hoisted(() => ({
 vi.mock('../lib/supabase.js', () => ({
   createSupabaseAdminClient: () => ({
     from: mockFrom,
+    auth: {
+      admin: { createUser: vi.fn(), generateLink: vi.fn(), updateUserById: vi.fn() },
+      signUp: vi.fn().mockResolvedValue({ data: { user: null }, error: null }),
+    },
   }),
 }));
 
@@ -542,6 +546,11 @@ async function buildGuardTestApp(): Promise<FastifyInstance> {
 
   await testApp.register(fastifyCookie, { secret: COOKIE_SECRET, hook: 'onRequest' });
   await testApp.register(fastifyJwt, { secret: JWT_SECRET });
+
+  // Add the verifyJwt decorator that authenticate middleware relies on
+  testApp.decorate('verifyJwt', async (token: string) => {
+    return testApp.jwt.verify(token);
+  });
 
   registerErrorHandler(testApp);
 

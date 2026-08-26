@@ -94,7 +94,7 @@ export default async function AuthLayout({ children }: AuthLayoutProps) {
 
         {/* Footer quote */}
         <p className="text-sm text-indigo-400">
-          "Stop creating manually. Start scaling automatically."
+          &quot;Stop creating manually. Start scaling automatically.&quot;
         </p>
       </div>
 

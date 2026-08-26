@@ -301,7 +301,7 @@ export default async function RootPage() {
             <span className="shimmer-text">Start scaling automatically.</span>
           </h2>
           <p className="relative mb-8 text-gray-400">
-            Join the automation revolution. Your competitors aren't sleeping — your content shouldn't either.
+            Join the automation revolution. Your competitors aren&apos;t sleeping — your content shouldn&apos;t either.
           </p>
           <div className="relative flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
             <Link

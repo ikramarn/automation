@@ -5,11 +5,17 @@
  * multiple components: Supabase auth, Vault storage, and DB metadata rows.
  *
  * Tests use Fastify's `app.inject()` — no real HTTP server or Supabase
- * connection. Supabase admin client and vault helpers are mocked via vi.mock()
- * so each test controls exact responses while exercising the full request path
- * through Fastify plugins, middleware, and route handlers.
+ * connection. Supabase admin client, vault helpers, and global fetch are
+ * mocked so each test controls exact responses while exercising the full
+ * request path through Fastify plugins, middleware, and route handlers.
  *
- * ── Test scenarios ─────────────────────────────────────────────────────────
+ * ── Architecture overview ─────────────────────────────────────────────────
+ *
+ *   /auth/google           — still uses Supabase signInWithOAuth + exchangeCodeForSession
+ *   /credentials/google    — uses direct fetch to oauth2.googleapis.com/token + listUsers()
+ *   /credentials/social/*  — uses direct fetch to platform token endpoints + HMAC state
+ *
+ * ── Test scenarios ────────────────────────────────────────────────────────
  *
  * Google OAuth Login (auth/google)
  *   1. GET /auth/google → 302 redirect to Google OAuth URL
@@ -19,44 +25,46 @@
  *      /login?error=oauth_failed
  *
  * Google Drive OAuth (credentials/google)
- *   4. GET /credentials/google/connect → 302 redirect to Google OAuth URL
- *      with drive.file scope
- *   5. GET /credentials/google/callback (valid code) → stores refresh token
- *      in vault, redirects to /settings/credentials?drive=connected
- *   6. GET /credentials/google/callback (user denied) → redirects to
- *      /settings/credentials?error=drive_oauth_failed
- *   7. GET /credentials/google/callback (no refresh token in session) →
- *      redirects with error
- *   8. DELETE /credentials/google (authenticated) → deletes vault secret,
- *      returns 200
+ *   4. GET /credentials/google/connect → 302 to Google OAuth URL with drive.file scope
+ *   5. GET /credentials/google/callback (valid code) → stores refresh token in vault
+ *   6. GET /credentials/google/callback (user denied) → error redirect
+ *   7. GET /credentials/google/callback (no refresh token) → error redirect
+ *   8. DELETE /credentials/google (authenticated) → deletes vault secret, 200
  *
  * Social Platform OAuth (credentials/social/:platform)
- *   9.  GET /credentials/social/youtube/connect → 302 to OAuth URL with
- *       youtube.upload scope
- *  10.  GET /credentials/social/youtube/callback (valid code) → stores
- *       access + refresh tokens, redirects with social=connected
- *  11.  GET /credentials/social/youtube/callback (error) → redirects with
- *       error query param
- *  12.  DELETE /credentials/social/youtube (authenticated) → pauses
- *       pipelines, deletes tokens, returns 200
+ *   9.  GET /credentials/social/youtube/connect + ?token → 302 to OAuth URL
+ *  10.  GET /credentials/social/youtube/callback (valid code+state) → stores tokens
+ *  11.  GET /credentials/social/youtube/callback (error) → error redirect
+ *  12.  DELETE /credentials/social/youtube (authenticated) → 200
  *
  * Validates: Requirements 1.2, 4.1, 4.2, 4.4, 4.7, 4.8, 5.1, 5.5, 5.8, 5.11
  */
 
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
+import crypto from 'node:crypto';
+import { describe, it, expect, beforeAll, afterAll, vi, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../app.js';
 
 // ── Environment setup ────────────────────────────────────────────────────────
+const COOKIE_SECRET = 'test-cookie-secret-at-least-32-characters';
 process.env['SUPABASE_JWT_SECRET'] = 'test-jwt-secret-that-is-long-enough-for-tests';
-process.env['COOKIE_SECRET'] = 'test-cookie-secret-at-least-32-characters';
+process.env['COOKIE_SECRET'] = COOKIE_SECRET;
 process.env['CORS_ORIGIN'] = 'http://localhost:3000';
 process.env['NODE_ENV'] = 'test';
 process.env['SUPABASE_URL'] = 'https://test.supabase.co';
 process.env['SUPABASE_SERVICE_ROLE_KEY'] = 'test-service-role-key';
 process.env['GOOGLE_OAUTH_REDIRECT_URL'] = 'https://example.com/auth/google/callback';
 process.env['GOOGLE_DRIVE_REDIRECT_URL'] = 'https://example.com/credentials/google/callback';
-process.env['SOCIAL_OAUTH_REDIRECT_URL'] = 'https://example.com/credentials/social/callback';
+process.env['GOOGLE_CLIENT_ID'] = 'test-google-client-id';
+process.env['GOOGLE_CLIENT_SECRET'] = 'test-google-client-secret';
+process.env['TIKTOK_CLIENT_KEY'] = 'test-tiktok-client-key';
+process.env['TIKTOK_CLIENT_SECRET'] = 'test-tiktok-client-secret';
+process.env['FACEBOOK_APP_ID'] = 'test-facebook-app-id';
+process.env['FACEBOOK_APP_SECRET'] = 'test-facebook-app-secret';
+process.env['SOCIAL_OAUTH_REDIRECT_URL_YOUTUBE'] = 'https://example.com/credentials/social/youtube/callback';
+process.env['SOCIAL_OAUTH_REDIRECT_URL_TIKTOK'] = 'https://example.com/credentials/social/tiktok/callback';
+process.env['SOCIAL_OAUTH_REDIRECT_URL_FACEBOOK'] = 'https://example.com/credentials/social/facebook/callback';
+process.env['SOCIAL_OAUTH_REDIRECT_URL_INSTAGRAM'] = 'https://example.com/credentials/social/instagram/callback';
 process.env['API_BASE_URL'] = 'https://example.com';
 process.env['DASHBOARD_URL'] = 'https://example.com/dashboard';
 
@@ -72,8 +80,12 @@ vi.mock('../lib/vault.js', () => ({
 }));
 
 // ── Mock: Supabase admin client ──────────────────────────────────────────────
+// /auth/google still uses signInWithOAuth + exchangeCodeForSession.
+// /credentials/google uses listUsers() for user lookup.
+// /credentials/social/* does NOT use supabase auth at all (direct fetch).
 const mockSignInWithOAuth = vi.fn();
 const mockExchangeCodeForSession = vi.fn();
+const mockListUsers = vi.fn();
 const mockDbFrom = vi.fn();
 
 vi.mock('../lib/supabase.js', () => ({
@@ -83,7 +95,9 @@ vi.mock('../lib/supabase.js', () => ({
         createUser: vi.fn(),
         generateLink: vi.fn().mockResolvedValue({ data: {}, error: null }),
         updateUserById: vi.fn(),
+        listUsers: mockListUsers,
       },
+      signUp: vi.fn().mockResolvedValue({ data: { user: null }, error: null }),
       signInWithPassword: vi.fn(),
       resetPasswordForEmail: vi.fn(),
       verifyOtp: vi.fn(),
@@ -94,21 +108,16 @@ vi.mock('../lib/supabase.js', () => ({
   }),
 }));
 
-// ── Mock: email (used by register/forgot-password routes loaded by buildApp) ─
-vi.mock('../lib/email.js', () => ({
-  sendEmail: vi.fn().mockResolvedValue(undefined),
-  sendVerificationEmail: vi.fn().mockResolvedValue(undefined),
-  sendPasswordResetEmail: vi.fn().mockResolvedValue(undefined),
-  sendWelcomeEmail: vi.fn().mockResolvedValue(undefined),
-}));
+// ── State helpers (mirrors social-oauth.ts logic) ────────────────────────────
 
-// ── Shared helpers ───────────────────────────────────────────────────────────
+function encodeState(userId: string, platform: string): string {
+  const payload = `${userId}:${platform}`;
+  const hmac = crypto.createHmac('sha256', COOKIE_SECRET).update(payload).digest('hex');
+  return `${payload}.${hmac}`;
+}
 
-/**
- * Returns a fully fluent Supabase DB chain mock that resolves terminal
- * calls (maybeSingle, upsert, order, insert, in, select with await) to the
- * provided terminalValue.
- */
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
 function buildFluentChain(terminalValue: unknown) {
   const chain: Record<string, ReturnType<typeof vi.fn>> = {
     select: vi.fn(),
@@ -133,67 +142,69 @@ function buildFluentChain(terminalValue: unknown) {
   return chain;
 }
 
-/** Builds a realistic Supabase exchangeCodeForSession response for OAuth login. */
-function buildLoginSession(userId = 'user-oauth-123') {
-  return {
-    data: {
-      session: {
-        access_token: 'valid-access-token',
-        expires_in: 86400,
-        user: { id: userId, email: 'user@example.com' },
-      },
-      user: { id: userId, email: 'user@example.com' },
-    },
-    error: null,
-  };
+/**
+ * Stubs global fetch for Google Drive callback:
+ * - First call (oauth2.googleapis.com/token) returns tokens
+ * - Second call (googleapis.com/oauth2/v2/userinfo) returns email
+ */
+function stubDriveFetch(opts: {
+  accessToken?: string;
+  refreshToken?: string | null;
+  email?: string;
+} = {}) {
+  const {
+    accessToken = 'drive-access-token',
+    refreshToken = 'drive-refresh-token-value',
+    email = 'user@example.com',
+  } = opts;
+
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockImplementation(async (url: string) => {
+      const u = String(url);
+      if (u.includes('oauth2.googleapis.com/token')) {
+        return {
+          ok: true,
+          json: async () => ({
+            access_token: accessToken,
+            ...(refreshToken !== null ? { refresh_token: refreshToken } : {}),
+          }),
+          text: async () => '',
+        };
+      }
+      if (u.includes('googleapis.com/oauth2/v2/userinfo')) {
+        return { ok: true, json: async () => ({ email }) };
+      }
+      return { ok: false, status: 500, text: async () => 'unexpected' };
+    }),
+  );
 }
 
-/** Builds a Supabase session response with Drive provider tokens. */
-function buildDriveSession(opts: { userId?: string; hasRefreshToken?: boolean } = {}) {
-  const userId = opts.userId ?? 'user-drive-123';
-  const hasRefreshToken = opts.hasRefreshToken ?? true;
-  return {
-    data: {
-      session: {
-        access_token: 'supabase-jwt',
-        expires_in: 3600,
-        provider_token: 'provider-access-token',
-        ...(hasRefreshToken ? { provider_refresh_token: 'drive-refresh-token-value' } : {}),
-        user: { id: userId, email: 'user@example.com' },
-      },
-      user: { id: userId, email: 'user@example.com' },
-    },
-    error: null,
-  };
+/**
+ * Stubs global fetch for Social YouTube callback:
+ * - oauth2.googleapis.com/token → access + refresh tokens
+ */
+function stubYouTubeFetch(accessToken = 'yt-access-token', refreshToken = 'yt-refresh-token') {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockImplementation(async (url: string) => {
+      if (String(url).includes('oauth2.googleapis.com/token')) {
+        return {
+          ok: true,
+          json: async () => ({ access_token: accessToken, refresh_token: refreshToken }),
+          text: async () => '',
+        };
+      }
+      return { ok: false, status: 500, text: async () => 'unexpected' };
+    }),
+  );
 }
 
-/** Builds a Supabase session response with social provider tokens. */
-function buildSocialSession(
-  userId = 'user-social-123',
-  providerToken = 'social-access-token',
-  refreshToken: string | null = 'social-refresh-token',
-) {
-  return {
-    data: {
-      session: {
-        access_token: 'supabase-jwt',
-        expires_in: 3600,
-        provider_token: providerToken,
-        ...(refreshToken !== null ? { provider_refresh_token: refreshToken } : {}),
-        user: { id: userId, email: 'user@example.com' },
-      },
-      user: { id: userId, email: 'user@example.com' },
-    },
-    error: null,
-  };
-}
-
-// ── Test suite ───────────────────────────────────────────────────────────────
+// ── Test suite ────────────────────────────────────────────────────────────────
 
 describe('OAuth Flows Integration Tests', () => {
   let app: FastifyInstance;
 
-  /** Signs a JWT using the app's configured @fastify/jwt instance. */
   function signJwt(userId = 'user-test-123', subscriptionStatus = 'active'): string {
     return app.jwt.sign({
       sub: userId,
@@ -202,21 +213,12 @@ describe('OAuth Flows Integration Tests', () => {
     });
   }
 
-  /**
-   * Returns Authorization + CSRF headers/cookies for a protected DELETE request.
-   * Uses app.signCookie() so the cookie passes the unsign check in csrfProtect.
-   */
   function authAndCsrfHeaders(userId = 'user-test-123', csrfToken = 'a'.repeat(64)) {
     const jwt = signJwt(userId);
     const signedCsrfCookie = app.signCookie(csrfToken);
     return {
-      headers: {
-        Authorization: `Bearer ${jwt}`,
-        'x-csrf-token': csrfToken,
-      },
-      cookies: {
-        csrf_token: signedCsrfCookie,
-      },
+      headers: { Authorization: `Bearer ${jwt}`, 'x-csrf-token': csrfToken },
+      cookies: { csrf_token: signedCsrfCookie },
     };
   }
 
@@ -232,22 +234,28 @@ describe('OAuth Flows Integration Tests', () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    // Vault ops succeed by default
     mockStoreSecret.mockResolvedValue('new-vault-secret-id');
     mockDeleteSecret.mockResolvedValue(undefined);
 
-    // DB: default no-data chain (safe for login-attempts and other middleware)
-    mockDbFrom.mockReturnValue(
-      buildFluentChain({ data: null, error: null }),
-    );
+    // listUsers default: returns the test user
+    mockListUsers.mockResolvedValue({
+      data: { users: [{ id: 'user-drive-123', email: 'user@example.com' }] },
+      error: null,
+    });
+
+    // DB default: safe no-data chain
+    mockDbFrom.mockReturnValue(buildFluentChain({ data: null, error: null }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   // ══════════════════════════════════════════════════════════════════════════
-  // 1–3: Google OAuth Login (/auth/google)
+  // 1–3: Google OAuth Login (/auth/google) — still uses Supabase signInWithOAuth
   // ══════════════════════════════════════════════════════════════════════════
 
   describe('Google OAuth Login — /auth/google', () => {
-    // ── Test 1 ──────────────────────────────────────────────────────────────
     it('1. GET /auth/google → 302 redirect to Google OAuth URL', async () => {
       const googleOAuthUrl =
         'https://accounts.google.com/o/oauth2/v2/auth?client_id=test&scope=openid+email+profile';
@@ -257,15 +265,10 @@ describe('OAuth Flows Integration Tests', () => {
         error: null,
       });
 
-      const response = await app.inject({
-        method: 'GET',
-        url: '/auth/google',
-      });
+      const response = await app.inject({ method: 'GET', url: '/auth/google' });
 
       expect(response.statusCode).toBe(302);
       expect(response.headers['location']).toBe(googleOAuthUrl);
-
-      // Verify correct provider and redirect URL were used
       expect(mockSignInWithOAuth).toHaveBeenCalledWith(
         expect.objectContaining({
           provider: 'google',
@@ -276,9 +279,18 @@ describe('OAuth Flows Integration Tests', () => {
       );
     });
 
-    // ── Test 2 ──────────────────────────────────────────────────────────────
     it('2. GET /auth/google/callback (valid code) → exchanges code, sets session cookie, redirects to dashboard', async () => {
-      mockExchangeCodeForSession.mockResolvedValue(buildLoginSession('user-google-456'));
+      mockExchangeCodeForSession.mockResolvedValue({
+        data: {
+          session: {
+            access_token: 'valid-access-token',
+            expires_in: 86400,
+            user: { id: 'user-google-456', email: 'user@example.com' },
+          },
+          user: { id: 'user-google-456', email: 'user@example.com' },
+        },
+        error: null,
+      });
 
       const response = await app.inject({
         method: 'GET',
@@ -286,11 +298,8 @@ describe('OAuth Flows Integration Tests', () => {
       });
 
       expect(response.statusCode).toBe(302);
-
-      // Redirects to dashboard URL
       expect(response.headers['location']).toBe('https://example.com/dashboard');
 
-      // Sets an HttpOnly session_token cookie
       const setCookieHeader = response.headers['set-cookie'];
       expect(setCookieHeader).toBeDefined();
       const cookieStr = Array.isArray(setCookieHeader)
@@ -300,11 +309,9 @@ describe('OAuth Flows Integration Tests', () => {
       expect(cookieStr).toMatch(/HttpOnly/i);
       expect(cookieStr).toMatch(/SameSite=Strict/i);
 
-      // Code was exchanged via Supabase
       expect(mockExchangeCodeForSession).toHaveBeenCalledWith('valid-auth-code');
     });
 
-    // ── Test 3 ──────────────────────────────────────────────────────────────
     it('3. GET /auth/google/callback (user denied) → redirects to /login?error=oauth_failed', async () => {
       const response = await app.inject({
         method: 'GET',
@@ -313,54 +320,40 @@ describe('OAuth Flows Integration Tests', () => {
 
       expect(response.statusCode).toBe(302);
       expect(response.headers['location']).toBe('/login?error=oauth_failed');
-
-      // No code exchange should have been attempted
       expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
     });
   });
 
   // ══════════════════════════════════════════════════════════════════════════
-  // 4–8: Google Drive OAuth (/credentials/google)
+  // 4–8: Google Drive OAuth (/credentials/google) — uses direct fetch + listUsers
   // ══════════════════════════════════════════════════════════════════════════
 
   describe('Google Drive OAuth — /credentials/google', () => {
-    // ── Test 4 ──────────────────────────────────────────────────────────────
-    it('4. GET /credentials/google/connect → 302 redirect to Google OAuth URL with drive.file scope', async () => {
-      const driveOAuthUrl =
-        'https://accounts.google.com/o/oauth2/v2/auth?scope=drive.file&access_type=offline';
-
-      mockSignInWithOAuth.mockResolvedValue({
-        data: { url: driveOAuthUrl, provider: 'google' },
-        error: null,
-      });
-
+    it('4. GET /credentials/google/connect → 302 to Google OAuth URL with drive.file scope', async () => {
       const response = await app.inject({
         method: 'GET',
         url: '/credentials/google/connect',
       });
 
       expect(response.statusCode).toBe(302);
-      expect(response.headers['location']).toBe(driveOAuthUrl);
-
-      // Must request drive.file scope with offline access for refresh token
-      expect(mockSignInWithOAuth).toHaveBeenCalledWith(
-        expect.objectContaining({
-          provider: 'google',
-          options: expect.objectContaining({
-            scopes: 'https://www.googleapis.com/auth/drive.file',
-            redirectTo: 'https://example.com/credentials/google/callback',
-          }),
-        }),
-      );
+      const location = response.headers['location'] as string;
+      expect(location).toContain('accounts.google.com');
+      expect(location).toContain('drive.file');
+      expect(location).toContain('test-google-client-id');
+      expect(location).toContain('offline');
+      // Does NOT use Supabase signInWithOAuth anymore
+      expect(mockSignInWithOAuth).not.toHaveBeenCalled();
     });
 
-    // ── Test 5 ──────────────────────────────────────────────────────────────
     it('5. GET /credentials/google/callback (valid code) → stores refresh token in vault, redirects to settings', async () => {
-      mockExchangeCodeForSession.mockResolvedValue(
-        buildDriveSession({ userId: 'user-drive-789' }),
-      );
+      const userId = 'user-drive-789';
+      stubDriveFetch({ email: 'user@example.com', refreshToken: 'drive-refresh-token-value' });
 
-      // DB chain: no existing credential (clean connect), upsert succeeds
+      mockListUsers.mockResolvedValue({
+        data: { users: [{ id: userId, email: 'user@example.com' }] },
+        error: null,
+      });
+
       const upsertMock = vi.fn().mockResolvedValue({ error: null });
       const chain = buildFluentChain({ data: null, error: null });
       chain['upsert'] = upsertMock;
@@ -374,17 +367,15 @@ describe('OAuth Flows Integration Tests', () => {
       expect(response.statusCode).toBe(302);
       expect(response.headers['location']).toBe('/settings/credentials?drive=connected');
 
-      // Refresh token stored in Vault with correct user + credential type
       expect(mockStoreSecret).toHaveBeenCalledWith(
-        'user-drive-789',
+        userId,
         'google_drive_refresh_token',
         'drive-refresh-token-value',
       );
 
-      // Credentials metadata row upserted with masked value and active status
       expect(upsertMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          user_id: 'user-drive-789',
+          user_id: userId,
           credential_type: 'google_drive_refresh_token',
           masked_value: '••••[connected]',
           vault_secret_id: 'new-vault-secret-id',
@@ -394,7 +385,6 @@ describe('OAuth Flows Integration Tests', () => {
       );
     });
 
-    // ── Test 6 ──────────────────────────────────────────────────────────────
     it('6. GET /credentials/google/callback (user denied) → redirects to /settings/credentials?error=drive_oauth_failed', async () => {
       const response = await app.inject({
         method: 'GET',
@@ -402,20 +392,13 @@ describe('OAuth Flows Integration Tests', () => {
       });
 
       expect(response.statusCode).toBe(302);
-      expect(response.headers['location']).toBe(
-        '/settings/credentials?error=drive_oauth_failed',
-      );
-
-      // No vault or DB operations should be performed (previous status retained, Req 4.7)
+      expect(response.headers['location']).toBe('/settings/credentials?error=drive_oauth_failed');
       expect(mockStoreSecret).not.toHaveBeenCalled();
-      expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
+      expect(mockDbFrom).not.toHaveBeenCalled();
     });
 
-    // ── Test 7 ──────────────────────────────────────────────────────────────
-    it('7. GET /credentials/google/callback (no refresh token in session) → redirects with error', async () => {
-      mockExchangeCodeForSession.mockResolvedValue(
-        buildDriveSession({ hasRefreshToken: false }),
-      );
+    it('7. GET /credentials/google/callback (no refresh token in response) → redirects with error', async () => {
+      stubDriveFetch({ refreshToken: null });
 
       const response = await app.inject({
         method: 'GET',
@@ -423,21 +406,13 @@ describe('OAuth Flows Integration Tests', () => {
       });
 
       expect(response.statusCode).toBe(302);
-      expect(response.headers['location']).toBe(
-        '/settings/credentials?error=drive_oauth_failed',
-      );
-
-      // Code was exchanged but refresh token was absent — vault must not be called
-      expect(mockExchangeCodeForSession).toHaveBeenCalledWith('code-no-refresh');
+      expect(response.headers['location']).toBe('/settings/credentials?error=drive_oauth_failed');
       expect(mockStoreSecret).not.toHaveBeenCalled();
     });
 
-    // ── Test 8 ──────────────────────────────────────────────────────────────
     it('8. DELETE /credentials/google (authenticated) → deletes vault secret, returns 200', async () => {
       const { headers, cookies } = authAndCsrfHeaders('user-del-drive');
 
-      // First DB call: SELECT to find credential
-      // Second DB call: DELETE row
       let callCount = 0;
       mockDbFrom.mockImplementation((_table: string) => {
         callCount++;
@@ -445,20 +420,15 @@ describe('OAuth Flows Integration Tests', () => {
           return {
             select: vi.fn().mockReturnThis(),
             eq: vi.fn().mockReturnThis(),
-            maybeSingle: vi
-              .fn()
-              .mockResolvedValue({
-                data: { id: 'cred-drive-1', vault_secret_id: 'vault-drive-secret' },
-                error: null,
-              }),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: { id: 'cred-drive-1', vault_secret_id: 'vault-drive-secret' },
+              error: null,
+            }),
           };
         }
-        // DELETE chain
         const deleteEq2 = vi.fn().mockResolvedValue({ error: null });
         const deleteEq1 = vi.fn().mockReturnValue({ eq: deleteEq2 });
-        return {
-          delete: vi.fn().mockReturnValue({ eq: deleteEq1 }),
-        };
+        return { delete: vi.fn().mockReturnValue({ eq: deleteEq1 }) };
       });
 
       const response = await app.inject({
@@ -470,92 +440,61 @@ describe('OAuth Flows Integration Tests', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ message: 'Google Drive disconnected' });
-
-      // Vault secret was deleted
       expect(mockDeleteSecret).toHaveBeenCalledWith('vault-drive-secret');
     });
   });
 
   // ══════════════════════════════════════════════════════════════════════════
   // 9–12: Social Platform OAuth (/credentials/social/youtube)
+  // Uses direct fetch + HMAC-signed state (no Supabase auth calls)
   // ══════════════════════════════════════════════════════════════════════════
 
   describe('Social Platform OAuth — /credentials/social/youtube', () => {
-    // ── Test 9 ──────────────────────────────────────────────────────────────
-    it('9. GET /credentials/social/youtube/connect → 302 to OAuth URL with correct scopes', async () => {
-      const youtubeOAuthUrl =
-        'https://accounts.google.com/o/oauth2/v2/auth?scope=youtube.upload';
-
-      mockSignInWithOAuth.mockResolvedValue({
-        data: { url: youtubeOAuthUrl, provider: 'google' },
-        error: null,
-      });
-
+    it('9. GET /credentials/social/youtube/connect (with token) → 302 to Google OAuth URL with youtube.upload scope', async () => {
+      const token = signJwt('user-yt-connect');
       const response = await app.inject({
         method: 'GET',
-        url: '/credentials/social/youtube/connect',
+        url: `/credentials/social/youtube/connect?token=${token}`,
       });
 
       expect(response.statusCode).toBe(302);
-      expect(response.headers['location']).toBe(youtubeOAuthUrl);
-
-      // Must use google provider and youtube.upload scope
-      expect(mockSignInWithOAuth).toHaveBeenCalledWith(
-        expect.objectContaining({
-          provider: 'google',
-          options: expect.objectContaining({
-            scopes: 'https://www.googleapis.com/auth/youtube.upload',
-          }),
-        }),
-      );
+      const location = response.headers['location'] as string;
+      expect(location).toContain('accounts.google.com');
+      expect(location).toContain('youtube.upload');
+      // Does NOT use Supabase signInWithOAuth
+      expect(mockSignInWithOAuth).not.toHaveBeenCalled();
     });
 
-    // ── Test 10 ─────────────────────────────────────────────────────────────
-    it('10. GET /credentials/social/youtube/callback (valid code) → stores access + refresh tokens, redirects with social=connected', async () => {
+    it('10. GET /credentials/social/youtube/callback (valid code+state) → stores access + refresh tokens, redirects with social=connected', async () => {
       const userId = 'user-yt-999';
-      mockExchangeCodeForSession.mockResolvedValue(
-        buildSocialSession(userId, 'yt-access-token', 'yt-refresh-token'),
-      );
+      stubYouTubeFetch('yt-access-token', 'yt-refresh-token');
+
       mockStoreSecret
         .mockResolvedValueOnce('vault-yt-access')
         .mockResolvedValueOnce('vault-yt-refresh');
 
-      // DB: no existing credentials
       const upsertMock = vi.fn().mockResolvedValue({ error: null });
       const chain = buildFluentChain({ data: null, error: null });
       chain['upsert'] = upsertMock;
       mockDbFrom.mockReturnValue(chain);
 
+      const state = encodeState(userId, 'youtube');
+
       const response = await app.inject({
         method: 'GET',
-        url: '/credentials/social/youtube/callback?code=valid-yt-code',
+        url: `/credentials/social/youtube/callback?code=valid-yt-code&state=${state}`,
       });
 
       expect(response.statusCode).toBe(302);
       const location = response.headers['location'] as string;
-
-      // Redirects to settings with social=connected and platform=youtube
       expect(location).toContain('social=connected');
       expect(location).toContain('platform=youtube');
       expect(location).toContain('/settings/credentials');
 
-      // Both access and refresh tokens stored in Vault
-      expect(mockStoreSecret).toHaveBeenCalledWith(
-        userId,
-        'youtube_access_token',
-        'yt-access-token',
-      );
-      expect(mockStoreSecret).toHaveBeenCalledWith(
-        userId,
-        'youtube_refresh_token',
-        'yt-refresh-token',
-      );
-
-      // Code was exchanged with the authorization code from query
-      expect(mockExchangeCodeForSession).toHaveBeenCalledWith('valid-yt-code');
+      expect(mockStoreSecret).toHaveBeenCalledWith(userId, 'youtube_access_token', 'yt-access-token');
+      expect(mockStoreSecret).toHaveBeenCalledWith(userId, 'youtube_refresh_token', 'yt-refresh-token');
     });
 
-    // ── Test 11 ─────────────────────────────────────────────────────────────
     it('11. GET /credentials/social/youtube/callback (error) → redirects with error query param', async () => {
       const response = await app.inject({
         method: 'GET',
@@ -564,88 +503,70 @@ describe('OAuth Flows Integration Tests', () => {
 
       expect(response.statusCode).toBe(302);
       const location = response.headers['location'] as string;
-
-      // Redirects to /settings/credentials with error (not /login)
       expect(location).toContain('/settings/credentials');
       expect(location).toContain('error=social_oauth_failed');
       expect(location).toContain('platform=youtube');
       expect(location).not.toContain('/login');
-
-      // No vault or code exchange operations (Req 5.11: previous status retained)
-      expect(mockExchangeCodeForSession).not.toHaveBeenCalled();
       expect(mockStoreSecret).not.toHaveBeenCalled();
     });
 
-    // ── Test 12 ─────────────────────────────────────────────────────────────
     it('12. DELETE /credentials/social/youtube (authenticated) → pauses pipelines, deletes tokens, returns 200', async () => {
       const userId = 'user-yt-delete';
       const { headers, cookies } = authAndCsrfHeaders(userId);
 
-      // DB mock: supports pipeline pause (.update().eq().contains().in().select())
-      // and credential fetch/delete for both access and refresh token types
       const pipelinePauseMock = vi.fn().mockResolvedValue({
         data: [{ id: 'pipeline-1', name: 'My YouTube Pipeline' }],
         error: null,
       });
 
-      // deleteCredentialAndSecret() for each token type does:
-      //   1. SELECT … maybeSingle()   — fetch the credential row
-      //   2. DELETE … eq().eq()       — delete the row
-      // YouTube has 2 token types (access + refresh) → 4 credentials table calls total.
-      const credentialCalls: Array<() => ReturnType<typeof buildFluentChain>> = [
-        // Call 1: SELECT for youtube_access_token
-        () => ({
-          ...buildFluentChain({ data: { id: 'cred-access-1', vault_secret_id: 'vault-yt-access' }, error: null }),
-          maybeSingle: vi.fn().mockResolvedValue({
-            data: { id: 'cred-access-1', vault_secret_id: 'vault-yt-access' },
-            error: null,
-          }),
-        }),
-        // Call 2: DELETE for youtube_access_token
-        () => {
-          const deleteEq2 = vi.fn().mockResolvedValue({ error: null });
-          const deleteEq1 = vi.fn().mockReturnValue({ eq: deleteEq2 });
-          return { ...buildFluentChain({ data: null, error: null }), delete: vi.fn().mockReturnValue({ eq: deleteEq1 }) };
-        },
-        // Call 3: SELECT for youtube_refresh_token
-        () => ({
-          ...buildFluentChain({ data: { id: 'cred-refresh-1', vault_secret_id: 'vault-yt-refresh' }, error: null }),
-          maybeSingle: vi.fn().mockResolvedValue({
-            data: { id: 'cred-refresh-1', vault_secret_id: 'vault-yt-refresh' },
-            error: null,
-          }),
-        }),
-        // Call 4: DELETE for youtube_refresh_token
-        () => {
-          const deleteEq2 = vi.fn().mockResolvedValue({ error: null });
-          const deleteEq1 = vi.fn().mockReturnValue({ eq: deleteEq2 });
-          return { ...buildFluentChain({ data: null, error: null }), delete: vi.fn().mockReturnValue({ eq: deleteEq1 }) };
-        },
+      // deleteCredentialAndSecret() for each token type:
+      //   1. SELECT … maybeSingle() — fetch credential
+      //   2. DELETE … eq().eq()     — delete row
+      // YouTube has 2 token types → 4 'credentials' table calls
+      const makeSelectChain = (vaultId: string, credId: string) => {
+        const maybeSingleFn = vi.fn().mockResolvedValue({
+          data: { id: credId, vault_secret_id: vaultId },
+          error: null,
+        });
+        const eqFn = vi.fn();
+        const selectFn = vi.fn();
+        const chain = { select: selectFn, eq: eqFn, maybeSingle: maybeSingleFn };
+        selectFn.mockReturnValue(chain);
+        eqFn.mockReturnValue(chain);
+        return chain;
+      };
+
+      const makeDeleteChain = () => {
+        const eq2 = vi.fn().mockResolvedValue({ error: null });
+        const eq1 = vi.fn().mockReturnValue({ eq: eq2 });
+        return { delete: vi.fn().mockReturnValue({ eq: eq1 }) };
+      };
+
+      const credentialCalls = [
+        () => makeSelectChain('vault-yt-access', 'cred-access-1'),
+        () => makeDeleteChain(),
+        () => makeSelectChain('vault-yt-refresh', 'cred-refresh-1'),
+        () => makeDeleteChain(),
       ];
-      let credFetchCount = 0;
+      let credIdx = 0;
 
       mockDbFrom.mockImplementation((table: string) => {
         if (table === 'pipelines') {
-          // Pipeline update chain: .update().eq().contains().in().select()
           return {
             update: vi.fn().mockReturnValue({
               eq: vi.fn().mockReturnValue({
                 contains: vi.fn().mockReturnValue({
-                  in: vi.fn().mockReturnValue({
-                    select: pipelinePauseMock,
-                  }),
+                  in: vi.fn().mockReturnValue({ select: pipelinePauseMock }),
                 }),
               }),
             }),
           };
         }
-
         if (table === 'credentials') {
-          const factory = credentialCalls[credFetchCount];
-          credFetchCount++;
+          const factory = credentialCalls[credIdx++];
           return factory ? factory() : buildFluentChain({ data: null, error: null });
         }
-
+        // All other tables (e.g. login_attempts used by auth middleware) get a safe default
         return buildFluentChain({ data: null, error: null });
       });
 
@@ -658,18 +579,14 @@ describe('OAuth Flows Integration Tests', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ message: 'Platform disconnected' });
-
-      // Pipelines were paused
       expect(pipelinePauseMock).toHaveBeenCalled();
-
-      // Both token vault secrets were deleted
       expect(mockDeleteSecret).toHaveBeenCalledWith('vault-yt-access');
       expect(mockDeleteSecret).toHaveBeenCalledWith('vault-yt-refresh');
     });
   });
 
   // ══════════════════════════════════════════════════════════════════════════
-  // OAuth Error Handling — cross-flow verification
+  // OAuth error handling — cross-flow verification
   // ══════════════════════════════════════════════════════════════════════════
 
   describe('OAuth error handling', () => {
@@ -689,10 +606,10 @@ describe('OAuth Flows Integration Tests', () => {
     });
 
     it('GET /credentials/google/callback with invalid code → 302 to settings with error', async () => {
-      mockExchangeCodeForSession.mockResolvedValue({
-        data: null,
-        error: { message: 'Code verifier mismatch' },
-      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => 'invalid_grant' }),
+      );
 
       const response = await app.inject({
         method: 'GET',
@@ -700,20 +617,19 @@ describe('OAuth Flows Integration Tests', () => {
       });
 
       expect(response.statusCode).toBe(302);
-      expect(response.headers['location']).toBe(
-        '/settings/credentials?error=drive_oauth_failed',
-      );
+      expect(response.headers['location']).toBe('/settings/credentials?error=drive_oauth_failed');
     });
 
-    it('GET /credentials/social/youtube/callback with invalid code → 302 to settings with error', async () => {
-      mockExchangeCodeForSession.mockResolvedValue({
-        data: null,
-        error: { message: 'Invalid grant' },
-      });
+    it('GET /credentials/social/youtube/callback with invalid code (bad fetch) → 302 to settings with error', async () => {
+      const state = encodeState('user-test', 'youtube');
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => 'invalid_grant' }),
+      );
 
       const response = await app.inject({
         method: 'GET',
-        url: '/credentials/social/youtube/callback?code=invalid-code',
+        url: `/credentials/social/youtube/callback?code=invalid-code&state=${state}`,
       });
 
       expect(response.statusCode).toBe(302);
@@ -722,9 +638,11 @@ describe('OAuth Flows Integration Tests', () => {
 
     it('Token storage in Vault after successful Google Drive OAuth', async () => {
       const userId = 'user-vault-verify';
-      mockExchangeCodeForSession.mockResolvedValue(
-        buildDriveSession({ userId }),
-      );
+      stubDriveFetch({ email: 'vault@example.com', refreshToken: 'drive-refresh-token-value' });
+      mockListUsers.mockResolvedValue({
+        data: { users: [{ id: userId, email: 'vault@example.com' }] },
+        error: null,
+      });
 
       const upsertMock = vi.fn().mockResolvedValue({ error: null });
       const chain = buildFluentChain({ data: null, error: null });
@@ -736,15 +654,12 @@ describe('OAuth Flows Integration Tests', () => {
         url: '/credentials/google/callback?code=vault-test-code',
       });
 
-      // Vault stores the token — storeSecret called with correct params
       expect(mockStoreSecret).toHaveBeenCalledTimes(1);
       expect(mockStoreSecret).toHaveBeenCalledWith(
         userId,
         'google_drive_refresh_token',
         'drive-refresh-token-value',
       );
-
-      // The vault secret ID returned by storeSecret is saved to the DB
       expect(upsertMock).toHaveBeenCalledWith(
         expect.objectContaining({ vault_secret_id: 'new-vault-secret-id' }),
         expect.anything(),
@@ -753,10 +668,7 @@ describe('OAuth Flows Integration Tests', () => {
 
     it('Token storage in Vault after successful YouTube OAuth', async () => {
       const userId = 'user-vault-yt';
-      mockExchangeCodeForSession.mockResolvedValue(
-        buildSocialSession(userId, 'yt-access', 'yt-refresh'),
-      );
-
+      stubYouTubeFetch('yt-access', 'yt-refresh');
       mockStoreSecret
         .mockResolvedValueOnce('vault-yt-access-id')
         .mockResolvedValueOnce('vault-yt-refresh-id');
@@ -766,12 +678,13 @@ describe('OAuth Flows Integration Tests', () => {
       chain['upsert'] = upsertMock;
       mockDbFrom.mockReturnValue(chain);
 
+      const state = encodeState(userId, 'youtube');
+
       await app.inject({
         method: 'GET',
-        url: '/credentials/social/youtube/callback?code=vault-yt-code',
+        url: `/credentials/social/youtube/callback?code=vault-yt-code&state=${state}`,
       });
 
-      // Both tokens written to Vault
       expect(mockStoreSecret).toHaveBeenCalledTimes(2);
       expect(mockStoreSecret).toHaveBeenCalledWith(userId, 'youtube_access_token', 'yt-access');
       expect(mockStoreSecret).toHaveBeenCalledWith(userId, 'youtube_refresh_token', 'yt-refresh');
@@ -779,39 +692,30 @@ describe('OAuth Flows Integration Tests', () => {
   });
 
   // ══════════════════════════════════════════════════════════════════════════
-  // All 4 social platforms — connect redirect
+  // All 4 social platforms — connect redirect (with ?token=)
   // ══════════════════════════════════════════════════════════════════════════
 
   describe('Social platform OAuth connect — all 4 platforms', () => {
     const platforms = [
-      { name: 'youtube', provider: 'google', scope: 'https://www.googleapis.com/auth/youtube.upload' },
-      { name: 'tiktok', provider: 'tiktok', scope: 'user.info.basic,video.upload,video.publish' },
-      { name: 'facebook', provider: 'facebook', scope: 'pages_manage_posts,pages_read_engagement' },
-      { name: 'instagram', provider: 'facebook', scope: 'instagram_content_publish' },
+      { name: 'youtube', urlContains: 'accounts.google.com' },
+      { name: 'tiktok', urlContains: 'tiktok.com' },
+      { name: 'facebook', urlContains: 'facebook.com' },
+      { name: 'instagram', urlContains: 'facebook.com' },
     ] as const;
 
-    for (const { name, provider, scope } of platforms) {
-      it(`GET /credentials/social/${name}/connect → 302 to OAuth URL (provider: ${provider})`, async () => {
-        const oauthUrl = `https://oauth.example.com/${name}`;
-        mockSignInWithOAuth.mockResolvedValue({
-          data: { url: oauthUrl, provider },
-          error: null,
-        });
-
+    for (const { name, urlContains } of platforms) {
+      it(`GET /credentials/social/${name}/connect → 302 to OAuth URL (provider: ${urlContains.split('.')[0]})`, async () => {
+        const token = signJwt('user-platform-test');
         const response = await app.inject({
           method: 'GET',
-          url: `/credentials/social/${name}/connect`,
+          url: `/credentials/social/${name}/connect?token=${token}`,
         });
 
         expect(response.statusCode).toBe(302);
-        expect(response.headers['location']).toBe(oauthUrl);
-
-        expect(mockSignInWithOAuth).toHaveBeenCalledWith(
-          expect.objectContaining({
-            provider,
-            options: expect.objectContaining({ scopes: scope }),
-          }),
-        );
+        const location = response.headers['location'] as string;
+        expect(location).toContain(urlContains);
+        // No Supabase OAuth calls — all direct
+        expect(mockSignInWithOAuth).not.toHaveBeenCalled();
       });
     }
   });

@@ -39,6 +39,7 @@ process.env['SUPABASE_SERVICE_ROLE_KEY'] = 'test-service-role-key';
 // Auth method mocks
 const mockCreateUser = vi.fn();
 const mockGenerateLink = vi.fn();
+const mockSignUp = vi.fn();
 const mockSignInWithPassword = vi.fn();
 const mockResetPasswordForEmail = vi.fn();
 const mockVerifyOtp = vi.fn();
@@ -89,6 +90,7 @@ vi.mock('../lib/supabase.js', () => ({
         generateLink: mockGenerateLink,
         updateUserById: mockUpdateUserById,
       },
+      signUp: mockSignUp,
       signInWithPassword: mockSignInWithPassword,
       resetPasswordForEmail: mockResetPasswordForEmail,
       verifyOtp: mockVerifyOtp,
@@ -165,6 +167,11 @@ describe('Supabase Auth & RLS Integration Tests', () => {
     // Safe defaults applied after clearing:
     // generateLink always succeeds
     mockGenerateLink.mockResolvedValue({ data: {}, error: null });
+    // signUp (register route) always succeeds by default
+    mockSignUp.mockResolvedValue({
+      data: { user: { id: USER_A_ID, email: 'newuser@example.com' } },
+      error: null,
+    });
     // No prior login failures → account not locked
     mockDbOrder.mockResolvedValue({ data: [], error: null });
     // Insert always succeeds
@@ -189,12 +196,8 @@ describe('Supabase Auth & RLS Integration Tests', () => {
      * → pipeline route (protected).
      */
     it('full registration flow: register → login → access protected route', async () => {
-      // Step 1: Register
-      mockCreateUser.mockResolvedValue({
-        data: { user: { id: USER_A_ID, email: 'newuser@example.com' } },
-        error: null,
-      });
-
+      // Step 1: Register — route now uses supabase.auth.signUp() (not admin.createUser)
+      // mockSignUp is already configured in beforeEach with a success response
       const registerResp = await app.inject({
         method: 'POST',
         url: '/auth/register',
