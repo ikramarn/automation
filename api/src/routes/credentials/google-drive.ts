@@ -3,6 +3,8 @@ import { AppError } from '../../errors/AppError.js';
 import { createSupabaseAdminClient } from '../../lib/supabase.js';
 import { storeSecret, deleteSecret } from '../../lib/vault.js';
 
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+
 /**
  * Google Drive OAuth credential routes.
  *
@@ -41,6 +43,7 @@ export async function googleDrivePublicRoutes(app: FastifyInstance): Promise<voi
   // Requirements: 4.1
   app.get('/google/connect', async (_request, reply) => {
     const redirectTo = process.env['GOOGLE_DRIVE_REDIRECT_URL'];
+    const clientId = process.env['GOOGLE_CLIENT_ID'];
 
     if (!redirectTo) {
       throw new AppError(
@@ -50,31 +53,22 @@ export async function googleDrivePublicRoutes(app: FastifyInstance): Promise<voi
       );
     }
 
-    const supabase = createSupabaseAdminClient();
-
-    const { data, error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: {
-        scopes: 'https://www.googleapis.com/auth/drive.file',
-        redirectTo,
-        skipBrowserRedirect: true,
-        // Request offline access so Google returns a refresh token
-        queryParams: {
-          access_type: 'offline',
-          prompt: 'consent',
-        },
-      },
-    });
-
-    if (error || !data?.url) {
-      throw new AppError(
-        502,
-        'drive_oauth_initiation_failed',
-        'Failed to initiate Google Drive OAuth',
-      );
+    if (!clientId) {
+      throw new AppError(500, 'configuration_error', 'GOOGLE_CLIENT_ID is not configured');
     }
 
-    return reply.status(302).redirect(data.url);
+    // Build direct Google OAuth URL (same pattern as social-oauth.ts).
+    // Supabase's signInWithOAuth returns an implicit flow (#access_token=) which
+    // cannot be handled server-side. Direct OAuth returns ?code= for server exchange.
+    const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+    authUrl.searchParams.set('client_id', clientId);
+    authUrl.searchParams.set('redirect_uri', redirectTo);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('scope', `openid email profile ${DRIVE_SCOPE}`);
+    authUrl.searchParams.set('access_type', 'offline');
+    authUrl.searchParams.set('prompt', 'consent');
+
+    return reply.status(302).redirect(authUrl.toString());
   });
 
   // ── GET /google/callback ─────────────────────────────────────────────────
@@ -124,41 +118,78 @@ export async function googleDrivePublicRoutes(app: FastifyInstance): Promise<voi
         return reply.status(302).redirect(errorRedirect);
       }
 
-      const supabase = createSupabaseAdminClient();
+      const redirectTo = process.env['GOOGLE_DRIVE_REDIRECT_URL'] ?? '';
 
-      // Exchange the authorization code for a session containing provider tokens
-      const { data: sessionData, error: exchangeError } =
-        await supabase.auth.exchangeCodeForSession(query.code);
+      // Exchange authorization code directly with Google's token endpoint.
+      // This reliably returns a refresh token unlike the Supabase-mediated flow.
+      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          code: query.code,
+          client_id: process.env['GOOGLE_CLIENT_ID'] ?? '',
+          client_secret: process.env['GOOGLE_CLIENT_SECRET'] ?? '',
+          redirect_uri: redirectTo,
+          grant_type: 'authorization_code',
+        }).toString(),
+      });
 
-      if (exchangeError || !sessionData?.session) {
-        request.log.warn(
-          { err: exchangeError?.message },
-          'Google Drive OAuth code exchange failed',
+      if (!tokenRes.ok) {
+        const tokenErr = await tokenRes.text().catch(() => 'unknown error');
+        request.log.error(
+          { status: tokenRes.status, err: tokenErr },
+          'Google Drive OAuth token exchange failed',
         );
         return reply.status(302).redirect(errorRedirect);
       }
 
-      const { session, user } = sessionData;
-      const userId = user?.id ?? session.user?.id;
+      const tokenData = await tokenRes.json() as {
+        access_token?: string;
+        refresh_token?: string;
+        error?: string;
+      };
 
-      if (!userId) {
-        request.log.warn('Google Drive OAuth callback: could not determine user id from session');
+      if (tokenData.error || !tokenData.access_token) {
+        request.log.error(
+          { err: tokenData.error },
+          'Google Drive token exchange returned error',
+        );
         return reply.status(302).redirect(errorRedirect);
       }
 
-      // provider_refresh_token is the Google Drive refresh token (Req 4.2)
-      const refreshToken = (session as unknown as Record<string, unknown>)[
-        'provider_refresh_token'
-      ] as string | null | undefined;
+      const refreshToken = tokenData.refresh_token ?? null;
 
       if (!refreshToken) {
-        request.log.warn(
-          { userId },
-          'Google Drive OAuth callback: no provider_refresh_token in session',
+        request.log.warn('Google Drive OAuth callback: no refresh_token in token response');
+        return reply.status(302).redirect(errorRedirect);
+      }
+
+      // Get user info from Google to identify the Supabase user
+      const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      });
+
+      if (!userInfoRes.ok) {
+        request.log.error('Google Drive OAuth: failed to get user info from Google');
+        return reply.status(302).redirect(errorRedirect);
+      }
+
+      const googleUser = await userInfoRes.json() as { email?: string };
+
+      // Match Google email to Supabase user
+      const supabase = createSupabaseAdminClient();
+      const { data: userList } = await supabase.auth.admin.listUsers();
+      const matchedUser = userList?.users?.find((u) => u.email === googleUser.email);
+
+      if (!matchedUser?.id) {
+        request.log.error(
+          { email: googleUser.email },
+          'Google Drive OAuth: could not match Google user to Supabase user',
         );
         return reply.status(302).redirect(errorRedirect);
       }
 
+      const userId = matchedUser.id;
       const credentialType = 'google_drive_refresh_token';
 
       try {
