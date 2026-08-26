@@ -27,7 +27,7 @@ export async function csrfTokenRoute(app: FastifyInstance): Promise<void> {
     // HttpOnly: false → JavaScript must be able to read it to embed in request header.
     // Secure: true    → only sent over HTTPS.
     // SameSite: Strict → prevents the cookie being sent in cross-site requests.
-    reply.setCookie(CSRF_COOKIE_NAME, token, {
+    void reply.setCookie(CSRF_COOKIE_NAME, token, {
       httpOnly: false,
       secure: true,
       sameSite: 'strict',
