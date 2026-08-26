@@ -371,6 +371,7 @@ function SocialPlatformRow({ platform, label, credentials, onDisconnected }: Soc
   const expired = cred?.status === "token_expired";
 
   const [disconnecting, setDisconnecting] = useState(false);
+  const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleDisconnect() {
@@ -392,6 +393,25 @@ function SocialPlatformRow({ platform, label, credentials, onDisconnected }: Soc
       setError(err instanceof Error ? err.message : "An unexpected error occurred.");
     } finally {
       setDisconnecting(false);
+    }
+  }
+
+  async function handleConnect() {
+    setError(null);
+    setConnecting(true);
+    try {
+      // Get the current session JWT to pass to the connect endpoint so it can
+      // identify the user and embed their ID in the OAuth state parameter.
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        throw new Error("Not authenticated. Please refresh the page and try again.");
+      }
+      const connectUrl = `${API_BASE}/credentials/social/${platform}/connect?token=${encodeURIComponent(session.access_token)}`;
+      window.location.href = connectUrl;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An unexpected error occurred.");
+      setConnecting(false);
     }
   }
 
@@ -422,13 +442,16 @@ function SocialPlatformRow({ platform, label, credentials, onDisconnected }: Soc
             {disconnecting ? "Disconnecting…" : "Disconnect"}
           </button>
         ) : (
-          <a
-            href={`${API_BASE}/credentials/social/${platform}/connect`}
-            className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
+          <button
+            type="button"
+            onClick={handleConnect}
+            disabled={connecting}
+            className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50"
             aria-label={`Connect ${label}`}
+            aria-busy={connecting}
           >
-            Connect
-          </a>
+            {connecting ? "Connecting…" : "Connect"}
+          </button>
         )}
       </div>
     </div>

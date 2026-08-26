@@ -1,13 +1,28 @@
+import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { AppError } from '../../errors/AppError.js';
 import { createSupabaseAdminClient } from '../../lib/supabase.js';
 import { storeSecret, deleteSecret, maskValue } from '../../lib/vault.js';
 
 /**
- * Supported social platforms and their OAuth configuration.
+ * Social platform OAuth routes.
  *
- * Requirements: 5.1, 5.2, 5.3, 5.4
+ * Supports YouTube (Google), TikTok, Facebook, and Instagram with correct
+ * platform-specific OAuth 2.0 flows.
+ *
+ * Architecture:
+ *   - Each platform has its own OAuth authorization URL and token endpoint.
+ *   - User identity is established by encoding the Supabase user ID in the
+ *     OAuth `state` parameter (signed with HMAC-SHA256 using COOKIE_SECRET)
+ *     so the callback can identify who to store credentials for, without
+ *     relying on the provider's identity (which only works for Google).
+ *   - The connect link includes a short-lived JWT (?token=) from the frontend
+ *     so the connect endpoint can verify the caller and encode their user ID.
+ *
+ * Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.8, 5.11
  */
+
+// ── Platform types and config ────────────────────────────────────────────────
 
 type SocialPlatform = 'youtube' | 'tiktok' | 'facebook' | 'instagram';
 
@@ -18,37 +33,15 @@ const VALID_SOCIAL_PLATFORMS = new Set<SocialPlatform>([
   'instagram',
 ]);
 
-/**
- * Supabase OAuth provider name per platform.
- *
- * TikTok uses its own provider slug in Supabase.
- * Facebook and Instagram both use Meta's OAuth — they share the same
- * `facebook` provider but request different scopes.
- */
-const PLATFORM_PROVIDER: Record<SocialPlatform, string> = {
-  youtube: 'google',
-  tiktok: 'tiktok',
-  facebook: 'facebook',
-  instagram: 'facebook', // Instagram uses Meta (Facebook) OAuth
-};
-
-/**
- * OAuth scopes per platform.
- * Requirements: 5.1–5.4
- */
+/** OAuth scopes requested per platform. */
 const PLATFORM_SCOPES: Record<SocialPlatform, string> = {
   youtube: 'https://www.googleapis.com/auth/youtube.upload',
   tiktok: 'user.info.basic,video.upload,video.publish',
-  facebook: 'pages_manage_posts,pages_read_engagement',
-  instagram: 'instagram_content_publish',
+  facebook: 'pages_manage_posts,pages_read_engagement,pages_show_list',
+  instagram: 'instagram_basic,instagram_content_publish,pages_show_list,pages_read_engagement',
 };
 
-/**
- * Credential types to store per platform.
- * Some platforms supply both access + refresh tokens; others only access tokens.
- *
- * Requirements: 5.5
- */
+/** Credential types stored per platform. */
 interface PlatformCredentials {
   accessTokenType: string;
   refreshTokenType?: string;
@@ -65,18 +58,216 @@ const PLATFORM_CREDENTIALS: Record<SocialPlatform, PlatformCredentials> = {
   },
   facebook: {
     accessTokenType: 'facebook_access_token',
-    // Facebook long-lived tokens don't use a separate refresh token
   },
   instagram: {
     accessTokenType: 'instagram_access_token',
-    // Instagram tokens are long-lived; no separate refresh
   },
 };
 
+// ── State token helpers ──────────────────────────────────────────────────────
+
 /**
- * Validates that the :platform param is one of the supported social platforms.
- * Throws a 400 AppError if invalid.
+ * Signs a state payload as `<payload>.<hmac>` using COOKIE_SECRET.
+ * This prevents CSRF and allows the callback to trust the embedded user ID.
  */
+function signState(payload: string): string {
+  const secret = process.env['COOKIE_SECRET'] ?? 'fallback-secret';
+  const hmac = crypto
+    .createHmac('sha256', secret)
+    .update(payload)
+    .digest('hex');
+  return `${payload}.${hmac}`;
+}
+
+/**
+ * Verifies and extracts the payload from a signed state token.
+ * Returns null if the signature is invalid or state is malformed.
+ */
+function verifyState(state: string): string | null {
+  const lastDot = state.lastIndexOf('.');
+  if (lastDot === -1) return null;
+  const payload = state.substring(0, lastDot);
+  const expectedSig = crypto
+    .createHmac('sha256', process.env['COOKIE_SECRET'] ?? 'fallback-secret')
+    .update(payload)
+    .digest('hex');
+  const actualSig = state.substring(lastDot + 1);
+  if (!crypto.timingSafeEqual(Buffer.from(expectedSig, 'hex'), Buffer.from(actualSig, 'hex'))) {
+    return null;
+  }
+  return payload;
+}
+
+/**
+ * Encodes `{ userId, platform }` into a signed state string.
+ */
+function encodeState(userId: string, platform: SocialPlatform): string {
+  const payload = `${userId}:${platform}`;
+  return signState(payload);
+}
+
+/**
+ * Decodes and verifies a state string, returning `{ userId, platform }` or null.
+ */
+function decodeState(state: string): { userId: string; platform: SocialPlatform } | null {
+  const payload = verifyState(state);
+  if (!payload) return null;
+  const colonIdx = payload.indexOf(':');
+  if (colonIdx === -1) return null;
+  const userId = payload.substring(0, colonIdx);
+  const platform = payload.substring(colonIdx + 1) as SocialPlatform;
+  if (!VALID_SOCIAL_PLATFORMS.has(platform)) return null;
+  return { userId, platform };
+}
+
+// ── Platform-specific OAuth builders ────────────────────────────────────────
+
+/** Builds the Google (YouTube) authorization URL. */
+function buildGoogleAuthUrl(redirectTo: string, scopes: string, state: string): string {
+  const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  url.searchParams.set('client_id', process.env['GOOGLE_CLIENT_ID'] ?? '');
+  url.searchParams.set('redirect_uri', redirectTo);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('scope', `openid email profile ${scopes}`);
+  url.searchParams.set('access_type', 'offline');
+  url.searchParams.set('prompt', 'consent');
+  url.searchParams.set('state', state);
+  return url.toString();
+}
+
+/** Builds the TikTok v2 authorization URL. */
+function buildTikTokAuthUrl(redirectTo: string, scopes: string, state: string): string {
+  const url = new URL('https://www.tiktok.com/v2/auth/authorize/');
+  url.searchParams.set('client_key', process.env['TIKTOK_CLIENT_KEY'] ?? '');
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('scope', scopes);
+  url.searchParams.set('redirect_uri', redirectTo);
+  url.searchParams.set('state', state);
+  return url.toString();
+}
+
+/** Builds the Meta (Facebook/Instagram) authorization URL. */
+function buildMetaAuthUrl(redirectTo: string, scopes: string, state: string): string {
+  const url = new URL('https://www.facebook.com/v19.0/dialog/oauth');
+  url.searchParams.set('client_id', process.env['FACEBOOK_APP_ID'] ?? '');
+  url.searchParams.set('redirect_uri', redirectTo);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('scope', scopes);
+  url.searchParams.set('state', state);
+  return url.toString();
+}
+
+// ── Platform-specific token exchange ────────────────────────────────────────
+
+interface TokenResult {
+  accessToken: string;
+  refreshToken: string | null;
+}
+
+/** Exchanges a Google authorization code for tokens. */
+async function exchangeGoogleCode(code: string, redirectUri: string): Promise<TokenResult> {
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: process.env['GOOGLE_CLIENT_ID'] ?? '',
+      client_secret: process.env['GOOGLE_CLIENT_SECRET'] ?? '',
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code',
+    }).toString(),
+  });
+  if (!res.ok) {
+    const err = await res.text().catch(() => 'unknown');
+    throw new Error(`Google token exchange failed: ${res.status} ${err}`);
+  }
+  const data = await res.json() as { access_token?: string; refresh_token?: string; error?: string };
+  if (data.error || !data.access_token) {
+    throw new Error(`Google token exchange error: ${data.error ?? 'missing access_token'}`);
+  }
+  return { accessToken: data.access_token, refreshToken: data.refresh_token ?? null };
+}
+
+/** Exchanges a TikTok authorization code for tokens. */
+async function exchangeTikTokCode(code: string, redirectUri: string): Promise<TokenResult> {
+  const res = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_key: process.env['TIKTOK_CLIENT_KEY'] ?? '',
+      client_secret: process.env['TIKTOK_CLIENT_SECRET'] ?? '',
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: redirectUri,
+    }).toString(),
+  });
+  if (!res.ok) {
+    const err = await res.text().catch(() => 'unknown');
+    throw new Error(`TikTok token exchange failed: ${res.status} ${err}`);
+  }
+  const data = await res.json() as {
+    data?: { access_token?: string; refresh_token?: string };
+    access_token?: string;
+    refresh_token?: string;
+    error?: string;
+    error_description?: string;
+  };
+  // TikTok v2 wraps response in data{}
+  const accessToken = data?.data?.access_token ?? data?.access_token;
+  const refreshToken = data?.data?.refresh_token ?? data?.refresh_token ?? null;
+  if (!accessToken) {
+    throw new Error(`TikTok token exchange error: ${data.error ?? 'missing access_token'}`);
+  }
+  return { accessToken, refreshToken };
+}
+
+/** Exchanges a Meta (Facebook/Instagram) authorization code for tokens. */
+async function exchangeMetaCode(code: string, redirectUri: string): Promise<TokenResult> {
+  const res = await fetch('https://graph.facebook.com/v19.0/oauth/access_token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: process.env['FACEBOOK_APP_ID'] ?? '',
+      client_secret: process.env['FACEBOOK_APP_SECRET'] ?? '',
+      redirect_uri: redirectUri,
+      code,
+    }).toString(),
+  });
+  if (!res.ok) {
+    const err = await res.text().catch(() => 'unknown');
+    throw new Error(`Meta token exchange failed: ${res.status} ${err}`);
+  }
+  const data = await res.json() as {
+    access_token?: string;
+    error?: { message?: string };
+  };
+  if (data.error || !data.access_token) {
+    throw new Error(`Meta token exchange error: ${data.error?.message ?? 'missing access_token'}`);
+  }
+
+  // Exchange short-lived token for a long-lived token (60 days)
+  const llRes = await fetch(
+    `https://graph.facebook.com/v19.0/oauth/access_token?` +
+    new URLSearchParams({
+      grant_type: 'fb_exchange_token',
+      client_id: process.env['FACEBOOK_APP_ID'] ?? '',
+      client_secret: process.env['FACEBOOK_APP_SECRET'] ?? '',
+      fb_exchange_token: data.access_token,
+    }).toString(),
+  );
+  if (llRes.ok) {
+    const llData = await llRes.json() as { access_token?: string };
+    if (llData.access_token) {
+      return { accessToken: llData.access_token, refreshToken: null };
+    }
+  }
+
+  // Fall back to short-lived token if exchange fails
+  return { accessToken: data.access_token, refreshToken: null };
+}
+
+// ── Validators ───────────────────────────────────────────────────────────────
+
 function validatePlatform(platform: string): SocialPlatform {
   if (!VALID_SOCIAL_PLATFORMS.has(platform as SocialPlatform)) {
     throw AppError.badRequest(
@@ -87,26 +278,23 @@ function validatePlatform(platform: string): SocialPlatform {
   return platform as SocialPlatform;
 }
 
+// ── Public routes ────────────────────────────────────────────────────────────
+
 /**
- * Social platform OAuth public routes (no auth required).
- *
- * These routes handle the OAuth browser redirect flow where no session cookie
- * or Authorization header is present. They must be registered OUTSIDE the
- * authenticated preHandler scope in the parent credentials plugin.
+ * Social platform OAuth public routes (no auth required on these routes,
+ * because the browser arrives via OAuth redirect with no session).
  *
  * Routes:
- *   GET /social/:platform/connect   — redirect to OAuth consent screen
+ *   GET /social/:platform/connect   — redirect to platform OAuth consent screen
  *   GET /social/:platform/callback  — exchange code, store tokens, redirect to dashboard
+ *
+ * The connect endpoint requires a ?token= query param (the user's Supabase JWT)
+ * so it can identify the user and encode their ID in the OAuth state.
  *
  * Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.11
  */
 export async function socialOAuthPublicRoutes(app: FastifyInstance): Promise<void> {
   // ── GET /social/:platform/connect ─────────────────────────────────────────
-  //
-  // Initiates the OAuth consent flow for the given social platform.
-  // Redirects the user's browser to the platform's OAuth consent screen.
-  //
-  // Requirements: 5.1, 5.2, 5.3, 5.4
   app.get(
     '/social/:platform/connect',
     {
@@ -114,63 +302,75 @@ export async function socialOAuthPublicRoutes(app: FastifyInstance): Promise<voi
         params: {
           type: 'object',
           required: ['platform'],
-          properties: {
-            platform: { type: 'string' },
-          },
+          properties: { platform: { type: 'string' } },
+        },
+        querystring: {
+          type: 'object',
+          properties: { token: { type: 'string' } },
         },
       },
     },
     async (request, reply) => {
       const { platform } = request.params as { platform: string };
+      const { token } = request.query as { token?: string };
+
       const socialPlatform = validatePlatform(platform);
+
+      // Verify the JWT and extract user ID so we can embed it in state
+      if (!token) {
+        throw new AppError(401, 'unauthorized', 'Missing token query parameter');
+      }
+
+      let userId: string;
+      try {
+        const decoded = app.jwt.verify<{ sub: string }>(token);
+        userId = decoded.sub;
+      } catch {
+        throw new AppError(401, 'unauthorized', 'Invalid or expired token');
+      }
 
       const redirectTo =
         process.env[`SOCIAL_OAUTH_REDIRECT_URL_${socialPlatform.toUpperCase()}`] ??
-        process.env['SOCIAL_OAUTH_REDIRECT_URL'] ??
-        `${process.env['API_BASE_URL'] ?? ''}/credentials/social/${socialPlatform}/callback`;
+        `${process.env['API_URL'] ?? ''}/credentials/social/${socialPlatform}/callback`;
 
       if (!redirectTo) {
-        throw new AppError(
-          500,
-          'configuration_error',
-          `OAuth redirect URL for "${socialPlatform}" is not configured`,
-        );
+        throw new AppError(500, 'configuration_error', `OAuth redirect URL for "${socialPlatform}" is not configured`);
       }
 
-      const supabase = createSupabaseAdminClient();
-      const provider = PLATFORM_PROVIDER[socialPlatform];
+      // Encode user ID + platform into a signed state parameter
+      const state = encodeState(userId, socialPlatform);
       const scopes = PLATFORM_SCOPES[socialPlatform];
 
-      // Build direct Google OAuth URL instead of going through Supabase.
-      // Supabase's server-side signInWithOAuth uses implicit flow (returns #access_token=)
-      // which doesn't work for server-side callback handling. Direct OAuth returns ?code=.
-      const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-      googleAuthUrl.searchParams.set('client_id', process.env['GOOGLE_CLIENT_ID'] ?? '');
-      googleAuthUrl.searchParams.set('redirect_uri', redirectTo);
-      googleAuthUrl.searchParams.set('response_type', 'code');
-      googleAuthUrl.searchParams.set('scope', `openid email profile ${scopes}`);
-      googleAuthUrl.searchParams.set('access_type', 'offline');
-      googleAuthUrl.searchParams.set('prompt', 'consent');
-      // Store platform in state so callback knows which platform to store credentials for
-      googleAuthUrl.searchParams.set('state', socialPlatform);
+      let authUrl: string;
+      switch (socialPlatform) {
+        case 'youtube':
+          if (!process.env['GOOGLE_CLIENT_ID']) {
+            throw new AppError(500, 'configuration_error', 'GOOGLE_CLIENT_ID is not configured');
+          }
+          authUrl = buildGoogleAuthUrl(redirectTo, scopes, state);
+          break;
 
-      if (!process.env['GOOGLE_CLIENT_ID']) {
-        throw new AppError(500, 'configuration_error', 'GOOGLE_CLIENT_ID is not configured');
+        case 'tiktok':
+          if (!process.env['TIKTOK_CLIENT_KEY']) {
+            throw new AppError(500, 'configuration_error', 'TIKTOK_CLIENT_KEY is not configured');
+          }
+          authUrl = buildTikTokAuthUrl(redirectTo, scopes, state);
+          break;
+
+        case 'facebook':
+        case 'instagram':
+          if (!process.env['FACEBOOK_APP_ID']) {
+            throw new AppError(500, 'configuration_error', 'FACEBOOK_APP_ID is not configured');
+          }
+          authUrl = buildMetaAuthUrl(redirectTo, scopes, state);
+          break;
       }
 
-      return reply.status(302).redirect(googleAuthUrl.toString());
+      return reply.status(302).redirect(authUrl);
     },
   );
 
   // ── GET /social/:platform/callback ────────────────────────────────────────
-  //
-  // OAuth callback handler. Exchanges the authorization code for tokens,
-  // stores them in Supabase Vault, and updates the credential metadata rows.
-  //
-  // On error or user denial: redirects to /settings/credentials with error query.
-  // On success: redirects to /settings/credentials with social=connected query.
-  //
-  // Requirements: 5.5, 5.11
   app.get(
     '/social/:platform/callback',
     {
@@ -178,9 +378,7 @@ export async function socialOAuthPublicRoutes(app: FastifyInstance): Promise<voi
         params: {
           type: 'object',
           required: ['platform'],
-          properties: {
-            platform: { type: 'string' },
-          },
+          properties: { platform: { type: 'string' } },
         },
         querystring: {
           type: 'object',
@@ -204,7 +402,6 @@ export async function socialOAuthPublicRoutes(app: FastifyInstance): Promise<voi
 
       const errorRedirectBase = '/settings/credentials';
 
-      // Validate platform — on invalid platform redirect with error
       let socialPlatform: SocialPlatform;
       try {
         socialPlatform = validatePlatform(platform);
@@ -216,7 +413,7 @@ export async function socialOAuthPublicRoutes(app: FastifyInstance): Promise<voi
 
       const errorRedirect = `${errorRedirectBase}?error=social_oauth_failed&platform=${socialPlatform}`;
 
-      // If OAuth provider returned an error or user denied access → redirect with error.
+      // OAuth provider returned an error or user denied access
       if (query.error || !query.code) {
         request.log.info(
           { platform: socialPlatform, oauthError: query.error },
@@ -225,101 +422,70 @@ export async function socialOAuthPublicRoutes(app: FastifyInstance): Promise<voi
         return reply.status(302).redirect(errorRedirect);
       }
 
-      // Exchange authorization code directly with Google's token endpoint.
-      // We use direct Google OAuth (not Supabase-mediated) for credential storage
-      // so we get provider_refresh_token reliably.
-      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          code: query.code,
-          client_id: process.env['GOOGLE_CLIENT_ID'] ?? '',
-          client_secret: process.env['GOOGLE_CLIENT_SECRET'] ?? '',
-          redirect_uri: process.env[`SOCIAL_OAUTH_REDIRECT_URL_${socialPlatform.toUpperCase()}`]
-            ?? `${process.env['API_URL'] ?? ''}/credentials/social/${socialPlatform}/callback`,
-          grant_type: 'authorization_code',
-        }).toString(),
-      });
+      // Verify and decode the signed state to get the user ID
+      if (!query.state) {
+        request.log.warn({ platform: socialPlatform }, 'Social OAuth callback: missing state');
+        return reply.status(302).redirect(errorRedirect);
+      }
 
-      if (!tokenRes.ok) {
-        const tokenErr = await tokenRes.text().catch(() => 'unknown error');
+      const stateData = decodeState(query.state);
+      if (!stateData) {
+        request.log.warn({ platform: socialPlatform }, 'Social OAuth callback: invalid state signature');
+        return reply.status(302).redirect(errorRedirect);
+      }
+
+      const { userId } = stateData;
+
+      const redirectUri =
+        process.env[`SOCIAL_OAUTH_REDIRECT_URL_${socialPlatform.toUpperCase()}`] ??
+        `${process.env['API_URL'] ?? ''}/credentials/social/${socialPlatform}/callback`;
+
+      // Exchange the authorization code for tokens using the platform-specific endpoint
+      let tokens: TokenResult;
+      try {
+        switch (socialPlatform) {
+          case 'youtube':
+            tokens = await exchangeGoogleCode(query.code, redirectUri);
+            break;
+          case 'tiktok':
+            tokens = await exchangeTikTokCode(query.code, redirectUri);
+            break;
+          case 'facebook':
+          case 'instagram':
+            tokens = await exchangeMetaCode(query.code, redirectUri);
+            break;
+        }
+      } catch (err) {
         request.log.error(
-          { platform: socialPlatform, status: tokenRes.status, err: tokenErr },
-          'Google token exchange failed',
+          { platform: socialPlatform, userId, err: String(err) },
+          'Social OAuth token exchange failed',
         );
         return reply.status(302).redirect(errorRedirect);
       }
-
-      const tokenData = await tokenRes.json() as {
-        access_token?: string;
-        refresh_token?: string;
-        error?: string;
-      };
-
-      if (tokenData.error || !tokenData.access_token) {
-        request.log.error(
-          { platform: socialPlatform, err: tokenData.error },
-          'Google token exchange returned error',
-        );
-        return reply.status(302).redirect(errorRedirect);
-      }
-
-      // Get user info to determine userId from the Google token
-      const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-        headers: { Authorization: `Bearer ${tokenData.access_token}` },
-      });
-
-      if (!userInfoRes.ok) {
-        request.log.error({ platform: socialPlatform }, 'Failed to get user info from Google');
-        return reply.status(302).redirect(errorRedirect);
-      }
-
-      const googleUser = await userInfoRes.json() as { email?: string; id?: string };
-
-      // Look up the Supabase user by email to get the userId
-      const supabase = createSupabaseAdminClient();
-      const { data: userList } = await supabase.auth.admin.listUsers();
-      const matchedUser = userList?.users?.find(
-        (u) => u.email === googleUser.email,
-      );
-
-      if (!matchedUser?.id) {
-        request.log.error(
-          { platform: socialPlatform, email: googleUser.email },
-          'Could not match Google user to Supabase user',
-        );
-        return reply.status(302).redirect(errorRedirect);
-      }
-
-      const userId = matchedUser.id;
-      const accessToken = tokenData.access_token;
-      const refreshToken = tokenData.refresh_token ?? null;
 
       const platformCredentials = PLATFORM_CREDENTIALS[socialPlatform];
+      const supabase = createSupabaseAdminClient();
 
       try {
-        // Store access token in Vault
+        // Store access token
         await upsertVaultCredential(
           supabase,
           userId,
           platformCredentials.accessTokenType,
-          accessToken,
+          tokens.accessToken,
         );
 
-        // Store refresh token in Vault if this platform provides one
-        if (platformCredentials.refreshTokenType && refreshToken) {
+        // Store refresh token if platform provides one
+        if (platformCredentials.refreshTokenType && tokens.refreshToken) {
           await upsertVaultCredential(
             supabase,
             userId,
             platformCredentials.refreshTokenType,
-            refreshToken,
+            tokens.refreshToken,
           );
         }
 
-        request.log.info(
-          { platform: socialPlatform, userId },
-          'Social platform tokens stored successfully',
-        );
+        request.log.info({ platform: socialPlatform, userId }, 'Social platform tokens stored successfully');
       } catch (err) {
         request.log.error(
           { platform: socialPlatform, userId, err: String(err) },
@@ -328,7 +494,6 @@ export async function socialOAuthPublicRoutes(app: FastifyInstance): Promise<voi
         return reply.status(302).redirect(errorRedirect);
       }
 
-      // Redirect to settings page confirming successful connection (Req 5.11)
       return reply.status(302).redirect(
         `${errorRedirectBase}?social=connected&platform=${socialPlatform}`,
       );
@@ -336,11 +501,10 @@ export async function socialOAuthPublicRoutes(app: FastifyInstance): Promise<voi
   );
 }
 
+// ── Protected routes ─────────────────────────────────────────────────────────
+
 /**
  * Social platform OAuth protected routes (JWT + CSRF required).
- *
- * These routes modify state and require authentication. They must be registered
- * INSIDE the authenticated preHandler scope in the parent credentials plugin.
  *
  * Routes:
  *   DELETE /social/:platform — disconnect platform, pause pipelines, delete tokens
@@ -348,18 +512,6 @@ export async function socialOAuthPublicRoutes(app: FastifyInstance): Promise<voi
  * Requirements: 5.8
  */
 export async function socialOAuthProtectedRoutes(app: FastifyInstance): Promise<void> {
-  // ── DELETE /social/:platform ──────────────────────────────────────────────
-  //
-  // Disconnects a social platform:
-  //  1. Validates platform
-  //  2. Pauses all active pipelines targeting the platform
-  //  3. Deletes Vault secrets + credentials rows for the platform's token types
-  //
-  // If token deletion fails after pipelines are already paused, disconnection
-  // still completes (Req 5.8: "allow the disconnection to complete, leaving
-  // the tokens in the vault").
-  //
-  // Requirements: 5.8
   app.delete(
     '/social/:platform',
     {
@@ -367,16 +519,12 @@ export async function socialOAuthProtectedRoutes(app: FastifyInstance): Promise<
         params: {
           type: 'object',
           required: ['platform'],
-          properties: {
-            platform: { type: 'string' },
-          },
+          properties: { platform: { type: 'string' } },
         },
         response: {
           200: {
             type: 'object',
-            properties: {
-              message: { type: 'string' },
-            },
+            properties: { message: { type: 'string' } },
             required: ['message'],
           },
         },
@@ -390,19 +538,12 @@ export async function socialOAuthProtectedRoutes(app: FastifyInstance): Promise<
       const supabase = createSupabaseAdminClient();
       const platformCredentials = PLATFORM_CREDENTIALS[socialPlatform];
 
-      // Collect credential types for this platform
       const credentialTypes = [platformCredentials.accessTokenType];
       if (platformCredentials.refreshTokenType) {
         credentialTypes.push(platformCredentials.refreshTokenType);
       }
 
-      // Step 1: Pause active pipelines that target this social platform.
-      //
-      // Pipelines store their publishing destinations in `publishing_platforms`
-      // (a text[] column). We pause any pipeline whose `publishing_platforms`
-      // contains this platform AND is currently active or running.
-      //
-      // Requirements: 5.8
+      // Pause active pipelines targeting this platform (Req 5.8)
       const { data: pausedPipelines, error: pauseError } = await supabase
         .from('pipelines')
         .update({ status: 'paused', updated_at: new Date().toISOString() })
@@ -412,7 +553,6 @@ export async function socialOAuthProtectedRoutes(app: FastifyInstance): Promise<
         .select('id, name');
 
       if (pauseError) {
-        // Log but do not abort — we still proceed with token deletion
         request.log.error(
           { platform: socialPlatform, userId, err: pauseError.message },
           'Failed to pause pipelines before platform disconnection',
@@ -424,14 +564,12 @@ export async function socialOAuthProtectedRoutes(app: FastifyInstance): Promise<
         );
       }
 
-      // Step 2: Delete Vault secrets and credential rows.
-      // If deletion fails AFTER pipelines are already paused, we allow
-      // disconnection to complete (Req 5.8).
+      // Delete vault secrets and credential rows
       for (const credentialType of credentialTypes) {
         try {
           await deleteCredentialAndSecret(supabase, userId, credentialType, request.log);
         } catch (err) {
-          // Non-fatal per Req 5.8: log but continue
+          // Non-fatal per Req 5.8
           request.log.warn(
             { platform: socialPlatform, credentialType, userId, err: String(err) },
             'Failed to delete credential — disconnection continues',
@@ -439,10 +577,7 @@ export async function socialOAuthProtectedRoutes(app: FastifyInstance): Promise<
         }
       }
 
-      request.log.info(
-        { platform: socialPlatform, userId },
-        'Social platform disconnected',
-      );
+      request.log.info({ platform: socialPlatform, userId }, 'Social platform disconnected');
 
       return reply.status(200).send({ message: 'Platform disconnected' });
     },
@@ -451,17 +586,6 @@ export async function socialOAuthProtectedRoutes(app: FastifyInstance): Promise<
 
 // ── Private helpers ──────────────────────────────────────────────────────────
 
-/**
- * Upserts a credential in Vault + the `credentials` metadata table.
- *
- * Steps:
- *  1. Fetch any existing credential row to get the old vault_secret_id.
- *  2. Store the new token value in Vault (encrypted).
- *  3. Upsert the credentials row pointing to the new vault secret.
- *  4. Delete the old vault secret (if any) to avoid orphans.
- *
- * Raw token values are NEVER logged (Req 18.4).
- */
 async function upsertVaultCredential(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
@@ -469,7 +593,6 @@ async function upsertVaultCredential(
   credentialType: string,
   tokenValue: string,
 ): Promise<void> {
-  // Check for existing credential to clean up its old vault secret
   const { data: existing } = await supabase
     .from('credentials')
     .select('vault_secret_id')
@@ -479,11 +602,9 @@ async function upsertVaultCredential(
 
   const oldVaultSecretId = existing?.vault_secret_id as string | null | undefined;
 
-  // Store new token in Vault
   const newVaultSecretId = await storeSecret(userId, credentialType, tokenValue);
   const maskedToken = maskValue(tokenValue);
 
-  // Upsert credential metadata row
   const { error: upsertError } = await supabase
     .from('credentials')
     .upsert(
@@ -499,31 +620,19 @@ async function upsertVaultCredential(
     );
 
   if (upsertError) {
-    // Clean up orphaned vault secret
     try {
       await deleteSecret(newVaultSecretId);
-    } catch {
-      // Best-effort cleanup — not critical
-    }
-    throw new Error(
-      `Failed to upsert credential row for "${credentialType}": ${upsertError.message}`,
-    );
+    } catch { /* best-effort */ }
+    throw new Error(`Failed to upsert credential row for "${credentialType}": ${upsertError.message}`);
   }
 
-  // Delete old vault secret now that the row points to the new one
   if (oldVaultSecretId) {
     try {
       await deleteSecret(oldVaultSecretId);
-    } catch {
-      // Orphaned secret is acceptable — do not fail the flow
-    }
+    } catch { /* orphaned secret is acceptable */ }
   }
 }
 
-/**
- * Deletes a credential's Vault secret and its `credentials` row.
- * Throws if the vault deletion fails; DB row deletion failure is logged but not thrown.
- */
 async function deleteCredentialAndSecret(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
@@ -540,28 +649,19 @@ async function deleteCredentialAndSecret(
     .maybeSingle();
 
   if (fetchError) {
-    logger.error(
-      { userId, credentialType, err: fetchError.message },
-      'Failed to fetch credential for deletion',
-    );
-    // Non-critical: credential might not exist for this platform
+    logger.error({ userId, credentialType, err: fetchError.message }, 'Failed to fetch credential for deletion');
     return;
   }
 
-  if (!credential) {
-    // Credential doesn't exist — nothing to delete
-    return;
-  }
+  if (!credential) return;
 
   const { id: credentialId, vault_secret_id: vaultSecretId } = credential as {
     id: string;
     vault_secret_id: string;
   };
 
-  // Delete vault secret
   await deleteSecret(vaultSecretId);
 
-  // Delete credentials metadata row
   const { error: deleteRowError } = await supabase
     .from('credentials')
     .delete()
@@ -573,6 +673,5 @@ async function deleteCredentialAndSecret(
       { userId, credentialType, credentialId, err: deleteRowError.message },
       'Failed to delete credentials row after vault secret deletion',
     );
-    // Not rethrown — partial deletion is acceptable for disconnection flow
   }
 }
