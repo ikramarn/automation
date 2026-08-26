@@ -181,55 +181,29 @@ pipeline {
             }
         }
 
-        // ── 5. Dev K8s Deploy (master/main → dev cluster) ─────────────────
-        stage('Dev Deploy (K8s)') {
+        // ── 5. Dev K8s Deploy — SKIPPED (no K8s cluster) ─────────────────
+        // stage('Dev Deploy (K8s)') { ... }
+
+        // ── 6. Prod VPS Deploy (master/main → VPS via SSH) ────────────────
+        stage('Prod Deploy (VPS)') {
             when {
                 anyOf { branch 'master'; branch 'main' }
             }
             steps {
-                withCredentials([file(credentialsId: 'KUBECONFIG_SECRET', variable: 'KUBECONFIG')]) {
-                    sh """
-                        helm lint ${HELM_CHART} -f ${HELM_VALUES_PROD}
-                        helm upgrade --install ${HELM_RELEASE} ${HELM_CHART} \\
-                          --namespace ${K8S_NAMESPACE} \\
-                          --create-namespace \\
-                          --values ${HELM_VALUES_PROD} \\
-                          --set global.imageTag=${IMAGE_TAG} \\
-                          --atomic \\
-                          --timeout 5m \\
-                          --wait
-                    """
-                }
-            }
-        }
-
-        // ── 6. Prod VPS Deploy (release/* → Hostinger VPS via Tailscale) ──
-        stage('Prod Deploy (VPS)') {
-            when {
-                branch pattern: 'release/.*', comparator: 'REGEXP'
-            }
-            steps {
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'VPS_SSH_KEY', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
-                    string(credentialsId: 'VPS_HOST', variable: 'VPS_HOST')
+                    string(credentialsId: 'VPS_HOST', variable: 'VPS_HOST'),
+                    file(credentialsId: 'DASHBOARD_BUILD_ENV', variable: 'DASHBOARD_ENV_FILE')
                 ]) {
                     sh """
-                        # Copy docker-compose files to VPS
+                        # Copy the deploy script to VPS and execute it
                         scp -i \${SSH_KEY} -o StrictHostKeyChecking=no \\
-                            docker-compose.yml \\
-                            docker-compose.prod.yml \\
-                            Caddyfile \\
-                            \${SSH_USER}@\${VPS_HOST}:${VPS_APP_DIR}/
+                            scripts/vps-deploy.sh \\
+                            \${SSH_USER}@\${VPS_HOST}:/tmp/vps-deploy.sh
 
-                        # Pull new images and restart containers
                         ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no \\
                             \${SSH_USER}@\${VPS_HOST} \\
-                            "cd ${VPS_APP_DIR} && \\
-                             IMAGE_TAG=${IMAGE_TAG} \\
-                             docker compose -f docker-compose.yml -f docker-compose.prod.yml pull && \\
-                             IMAGE_TAG=${IMAGE_TAG} \\
-                             docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-orphans && \\
-                             docker image prune -f"
+                            "chmod +x /tmp/vps-deploy.sh && IMAGE_TAG=${IMAGE_TAG} REGISTRY=${REGISTRY} bash /tmp/vps-deploy.sh"
                     """
                 }
             }
@@ -241,27 +215,16 @@ pipeline {
                 anyOf {
                     branch 'master'
                     branch 'main'
-                    branch pattern: 'release/.*', comparator: 'REGEXP'
                 }
             }
             steps {
-                withCredentials([file(credentialsId: 'KUBECONFIG_SECRET', variable: 'KUBECONFIG')]) {
+                withCredentials([string(credentialsId: 'VPS_HOST', variable: 'VPS_HOST')]) {
                     sh """
-                        kubectl rollout status deployment/dashboard-preview \\
-                            -n ${K8S_NAMESPACE} --timeout=120s || true
-
-                        kubectl port-forward svc/dashboard-preview-svc 8081:3000 \\
-                            -n ${K8S_NAMESPACE} &
-                        sleep 5
-
-                        curl --fail --silent --max-time 10 http://localhost:8081/ || exit 1
-                        echo "✅ Smoke test passed"
+                        echo "Waiting 15s for containers to stabilise..."
+                        sleep 15
+                        curl --fail --silent --max-time 15 https://automatesocials.tech/api/health || exit 1
+                        echo "✅ Smoke test passed — /api/health returned 200"
                     """
-                }
-            }
-            post {
-                always {
-                    sh "pkill -f 'kubectl port-forward' || true"
                 }
             }
         }
