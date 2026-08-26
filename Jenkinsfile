@@ -5,22 +5,23 @@
 //   2. Test           — run unit + property-based tests across all projects
 //   3. Build Images   — docker build --target production for api + dashboard
 //   4. Push Images    — push tagged images to Docker Hub (ikcloudky6/automation)
-//   5. Helm Deploy    — deploy to dev K8s cluster via Tailscale kubeconfig
-//   6. VPS Deploy     — SSH deploy to prod VPS via Tailscale (release/* branch)
-//   7. Smoke Test     — verify /health endpoints post-deploy
+//   5. VPS Deploy     — SSH deploy to VPS on master push
+//   6. Smoke Test     — verify /health endpoint post-deploy
 //
 // ── Jenkins Credentials Required ─────────────────────────────────────────────
 // Configure in Jenkins → Manage Credentials → Global:
 //
-//   docker-hub               Username/Password  — Docker Hub (ikcloudky6)
-//   KUBECONFIG_SECRET        Secret file        — kubeconfig pointing to K8s
-//                                                 master via Tailscale IP
-//   VPS_SSH_KEY              SSH private key    — deploy user on Hostinger VPS
-//   VPS_HOST                 Secret text        — VPS Tailscale IP or hostname
-//   DASHBOARD_BUILD_ENV      Secret file        — .env file containing:
-//                                                   NEXT_PUBLIC_SUPABASE_URL
-//                                                   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
-//                                                   NEXT_PUBLIC_API_BASE_URL
+//   docker-hub           Username/Password — Docker Hub (ikcloudky6)
+//   VPS_SSH_KEY          SSH private key   — root user on VPS
+//   VPS_HOST             Secret text       — VPS IP or hostname (76.13.254.137)
+//   DASHBOARD_BUILD_ENV  Secret file       — .env with Next.js public build args:
+//                                             NEXT_PUBLIC_SUPABASE_URL
+//                                             NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+//                                             NEXT_PUBLIC_API_BASE_URL
+//   API_ENV              Secret file       — complete .env for the api container
+//                                           (all runtime env vars — source of truth)
+//   NEXTJS_ENV           Secret file       — complete .env for the nextjs container
+//                                           (NODE_ENV, PORT, and any runtime vars)
 
 pipeline {
     agent any
@@ -31,14 +32,7 @@ pipeline {
 
     environment {
         REGISTRY         = 'ikcloudky6/automation'
-        API_IMAGE        = "${REGISTRY}"
-        DASHBOARD_IMAGE  = "${REGISTRY}"
         IMAGE_TAG        = "${env.GIT_COMMIT?.take(8) ?: 'latest'}"
-        HELM_RELEASE     = 'automation'
-        K8S_NAMESPACE    = 'automation'
-        HELM_CHART       = './helm/automation'
-        HELM_VALUES_PROD = './helm/automation/values-prod.yaml'
-        VPS_APP_DIR      = '/opt/autoflow'
     }
 
     options {
@@ -193,16 +187,18 @@ pipeline {
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'VPS_SSH_KEY', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
                     string(credentialsId: 'VPS_HOST', variable: 'VPS_HOST'),
-                    file(credentialsId: 'DASHBOARD_BUILD_ENV', variable: 'DASHBOARD_ENV_FILE')
+                    file(credentialsId: 'API_ENV',    variable: 'API_ENV_FILE'),
+                    file(credentialsId: 'NEXTJS_ENV', variable: 'NEXTJS_ENV_FILE')
                 ]) {
                     sh """
-                        # Copy the deploy script to VPS and execute it
-                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no \\
-                            scripts/vps-deploy.sh \\
-                            \${SSH_USER}@\${VPS_HOST}:/tmp/vps-deploy.sh
+                        # Copy env files and deploy script to VPS
+                        # Env files are the source of truth — never read from running containers
+                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no \${API_ENV_FILE}    \${SSH_USER}@\${VPS_HOST}:/tmp/api.env
+                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no \${NEXTJS_ENV_FILE} \${SSH_USER}@\${VPS_HOST}:/tmp/nextjs.env
+                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no scripts/vps-deploy.sh \${SSH_USER}@\${VPS_HOST}:/tmp/vps-deploy.sh
 
-                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no \\
-                            \${SSH_USER}@\${VPS_HOST} \\
+                        # Run the deploy script on the VPS
+                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no \${SSH_USER}@\${VPS_HOST} \
                             "chmod +x /tmp/vps-deploy.sh && IMAGE_TAG=${IMAGE_TAG} REGISTRY=${REGISTRY} bash /tmp/vps-deploy.sh"
                     """
                 }
