@@ -54,7 +54,10 @@ export async function triggerPipelineRoute(app: FastifyInstance): Promise<void> 
       const { data: pipeline, error: pipelineError } = await supabase
         .from('pipelines')
         .select(
-          'id, user_id, status, n8n_workflow_id, name, niche_keyword, publishing_platforms, schedule_cron_utc',
+          'id, user_id, status, n8n_workflow_id, name, niche_keyword, publishing_platforms, schedule_cron_utc, ' +
+          'heygen_mode, heygen_engine, heygen_avatar_id, heygen_voice_id, heygen_resolution, heygen_aspect_ratio, ' +
+          'heygen_motion_prompt, heygen_agent_prompt, heygen_orientation, ' +
+          'video_language, script_tone, openai_model, target_duration_secs, gdrive_folder_id',
         )
         .eq('id', pipeline_id)
         .maybeSingle();
@@ -165,6 +168,22 @@ export async function triggerPipelineRoute(app: FastifyInstance): Promise<void> 
         niche_keyword: p['niche_keyword'],
         publishing_platforms: p['publishing_platforms'],
         schedule_cron_utc: p['schedule_cron_utc'],
+        // HeyGen generation config
+        heygen_mode:          p['heygen_mode']          ?? 'classic',
+        heygen_engine:        p['heygen_engine']         ?? 'avatar_iv',
+        heygen_avatar_id:     p['heygen_avatar_id']      ?? null,
+        heygen_voice_id:      p['heygen_voice_id']       ?? null,
+        heygen_resolution:    p['heygen_resolution']     ?? '1080p',
+        heygen_aspect_ratio:  p['heygen_aspect_ratio']   ?? '9:16',
+        heygen_motion_prompt: p['heygen_motion_prompt']  ?? null,
+        heygen_agent_prompt:  p['heygen_agent_prompt']   ?? null,
+        heygen_orientation:   p['heygen_orientation']    ?? 'portrait',
+        // Content / script config
+        video_language:        p['video_language']        ?? 'English',
+        script_tone:           p['script_tone']           ?? 'professional',
+        openai_model:          p['openai_model']          ?? 'gpt-4o-mini',
+        target_duration_secs:  p['target_duration_secs'] ?? 60,
+        gdrive_folder_id:      p['gdrive_folder_id']     ?? null,
         triggered_by: 'scheduler',
       };
 

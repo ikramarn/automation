@@ -14,6 +14,14 @@ interface UpdatePipelineBody {
   schedule_days_of_week?: number[];
   openai_model?: string;
   heygen_avatar_id?: string;
+  heygen_engine?: string;
+  heygen_mode?: string;
+  heygen_voice_id?: string;
+  heygen_resolution?: string;
+  heygen_aspect_ratio?: string;
+  heygen_motion_prompt?: string;
+  heygen_agent_prompt?: string;
+  heygen_orientation?: string;
   video_language?: string;
   script_tone?: string;
   target_duration_secs?: number;
@@ -66,6 +74,14 @@ export async function updatePipelineRoute(app: FastifyInstance): Promise<void> {
             },
             openai_model: { type: 'string' },
             heygen_avatar_id: { type: 'string' },
+            heygen_engine: { type: 'string', enum: ['avatar_v', 'avatar_iv', 'avatar_iii'] },
+            heygen_mode: { type: 'string', enum: ['classic', 'agent'] },
+            heygen_voice_id: { type: 'string' },
+            heygen_resolution: { type: 'string', enum: ['1080p', '720p', '4k'] },
+            heygen_aspect_ratio: { type: 'string', enum: ['9:16', '16:9', '1:1', '4:5'] },
+            heygen_motion_prompt: { type: 'string' },
+            heygen_agent_prompt: { type: 'string' },
+            heygen_orientation: { type: 'string', enum: ['portrait', 'landscape'] },
             video_language: { type: 'string' },
             script_tone: { type: 'string' },
             target_duration_secs: { type: 'number' },
@@ -105,12 +121,20 @@ export async function updatePipelineRoute(app: FastifyInstance): Promise<void> {
       if (body.name !== undefined) updates['name'] = body.name;
       if (body.niche_keyword !== undefined) updates['niche_keyword'] = body.niche_keyword;
       if (body.publishing_platforms !== undefined) updates['publishing_platforms'] = body.publishing_platforms;
-      if (body.openai_model !== undefined) updates['openai_model'] = body.openai_model;
-      if (body.heygen_avatar_id !== undefined) updates['heygen_avatar_id'] = body.heygen_avatar_id;
-      if (body.video_language !== undefined) updates['video_language'] = body.video_language;
-      if (body.script_tone !== undefined) updates['script_tone'] = body.script_tone;
-      if (body.target_duration_secs !== undefined) updates['target_duration_secs'] = body.target_duration_secs;
-      if (body.gdrive_folder_id !== undefined) updates['gdrive_folder_id'] = body.gdrive_folder_id;
+      if (body.openai_model !== undefined)       updates['openai_model']       = body.openai_model;
+      if (body.heygen_avatar_id !== undefined)    updates['heygen_avatar_id']    = body.heygen_avatar_id;
+      if (body.heygen_engine !== undefined)       updates['heygen_engine']       = body.heygen_engine;
+      if (body.heygen_mode !== undefined)         updates['heygen_mode']         = body.heygen_mode;
+      if (body.heygen_voice_id !== undefined)     updates['heygen_voice_id']     = body.heygen_voice_id;
+      if (body.heygen_resolution !== undefined)   updates['heygen_resolution']   = body.heygen_resolution;
+      if (body.heygen_aspect_ratio !== undefined) updates['heygen_aspect_ratio'] = body.heygen_aspect_ratio;
+      if (body.heygen_motion_prompt !== undefined)updates['heygen_motion_prompt']= body.heygen_motion_prompt;
+      if (body.heygen_agent_prompt !== undefined) updates['heygen_agent_prompt'] = body.heygen_agent_prompt;
+      if (body.heygen_orientation !== undefined)  updates['heygen_orientation']  = body.heygen_orientation;
+      if (body.video_language !== undefined)      updates['video_language']      = body.video_language;
+      if (body.script_tone !== undefined)         updates['script_tone']         = body.script_tone;
+      if (body.target_duration_secs !== undefined)updates['target_duration_secs']= body.target_duration_secs;
+      if (body.gdrive_folder_id !== undefined)    updates['gdrive_folder_id']    = body.gdrive_folder_id;
       if (body.schedule_recurrence !== undefined) updates['schedule_recurrence'] = body.schedule_recurrence;
       if (body.schedule_time_hhmm !== undefined) updates['schedule_time_hhmm'] = body.schedule_time_hhmm;
       if (body.schedule_timezone !== undefined) updates['schedule_timezone'] = body.schedule_timezone;

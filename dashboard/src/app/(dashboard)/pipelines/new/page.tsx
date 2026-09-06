@@ -40,7 +40,19 @@ interface FormState {
   // Step 2 — content (HeyGen path)
   name: string;
   niche_keyword: string;
+  // HeyGen — mode
+  heygen_mode: "classic" | "agent";
+  // HeyGen — classic mode
+  heygen_engine: "avatar_iv" | "avatar_v" | "avatar_iii";
   heygen_avatar_id: string;
+  heygen_voice_id: string;
+  heygen_resolution: "1080p" | "720p" | "4k";
+  heygen_aspect_ratio: "9:16" | "16:9" | "1:1" | "4:5";
+  heygen_motion_prompt: string;
+  // HeyGen — agent mode
+  heygen_agent_prompt: string;
+  heygen_orientation: "portrait" | "landscape";
+  // Content / script
   video_language: string;
   script_tone: string;
   openai_model: string;
@@ -109,6 +121,47 @@ const OPENAI_MODELS = [
   { value: "gpt-4o-mini", label: "GPT-4o Mini (fast, recommended)" },
   { value: "gpt-4o",      label: "GPT-4o (higher quality)" },
   { value: "gpt-4-turbo", label: "GPT-4 Turbo" },
+];
+
+// HeyGen engine options
+const HEYGEN_ENGINES = [
+  {
+    value: "avatar_iv",
+    label: "Avatar IV — Standard",
+    description: "Default engine. Expressive facial + head motion. Great for most use cases.",
+    badge: "Recommended",
+    badgeColor: "bg-indigo-100 text-indigo-700",
+    credits: "20 credits/min",
+  },
+  {
+    value: "avatar_v",
+    label: "Avatar V — Premium",
+    description: "Highest fidelity. Full-body realism and cinematic lip-sync. Requires eligible avatar.",
+    badge: "Best Quality",
+    badgeColor: "bg-purple-100 text-purple-700",
+    credits: "20 credits/min",
+  },
+  {
+    value: "avatar_iii",
+    label: "Avatar III — Fast",
+    description: "Fastest rendering. Precise lip-sync. Best for photo avatars. Lower cost.",
+    badge: "Cheapest",
+    badgeColor: "bg-green-100 text-green-700",
+    credits: "3 credits/min",
+  },
+] as const;
+
+const HEYGEN_RESOLUTIONS = [
+  { value: "1080p", label: "1080p (Full HD) — recommended" },
+  { value: "720p",  label: "720p (HD) — faster render" },
+  { value: "4k",    label: "4K — Avatar III only" },
+];
+
+const HEYGEN_ASPECT_RATIOS = [
+  { value: "9:16",  label: "9:16 — Portrait (TikTok / Reels / Shorts)" },
+  { value: "16:9",  label: "16:9 — Landscape (YouTube)" },
+  { value: "1:1",   label: "1:1 — Square (Instagram feed)" },
+  { value: "4:5",   label: "4:5 — Vertical (Instagram)" },
 ];
 
 const COMMON_TIMEZONES = [
@@ -406,78 +459,330 @@ function Step2HeyGen({
         <FieldError message={errors.name} />
       </div>
 
-      {/* Niche keyword */}
-      <div className="mb-5">
-        <label htmlFor="niche-keyword" className="mb-1 block text-sm font-medium text-gray-700">
-          Niche keyword <span className="text-red-500">*</span>
-        </label>
-        <input
-          id="niche-keyword"
-          type="text"
-          value={form.niche_keyword}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("niche_keyword", e.target.value)}
-          maxLength={200}
-          placeholder="e.g. artificial intelligence, crypto, fitness"
-          aria-invalid={!!errors.niche_keyword}
-          className={`block w-full rounded-lg border px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 ${
-            errors.niche_keyword ? "border-red-300 focus:border-red-500 focus:ring-red-500" : "border-gray-300 focus:border-indigo-500 focus:ring-indigo-500"
-          }`}
-        />
-        <p className="mt-1 text-xs text-gray-400">
-          AutoFlow searches Google News and NewsAPI for articles matching this keyword to generate each video.
-        </p>
-        <FieldError message={errors.niche_keyword} />
-      </div>
-
-      {/* HeyGen Avatar ID */}
-      <div className="mb-5">
-        <label htmlFor="heygen-avatar-id" className="mb-1 block text-sm font-medium text-gray-700">
-          HeyGen Avatar ID
-          <span className="ml-1 text-xs font-normal text-gray-400">(optional)</span>
-        </label>
-        <input
-          id="heygen-avatar-id"
-          type="text"
-          value={form.heygen_avatar_id}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("heygen_avatar_id", e.target.value)}
-          placeholder="e.g. avatar_abc123"
-          className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-        />
-        <p className="mt-1 text-xs text-gray-400">
-          Find your avatar IDs in <strong>HeyGen → Avatars</strong>. Leave blank to use your HeyGen account default.
-        </p>
-      </div>
-
-      {/* Language + Tone row */}
-      <div className="mb-5 grid gap-4 sm:grid-cols-2">
-        <div>
-          <label htmlFor="video-language" className="mb-1 block text-sm font-medium text-gray-700">
-            Video language
-          </label>
-          <select
-            id="video-language"
-            value={form.video_language}
-            onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange("video_language", e.target.value)}
-            className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-          >
-            {LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
-          </select>
-        </div>
-
-        <div>
-          <label htmlFor="script-tone" className="mb-1 block text-sm font-medium text-gray-700">
-            Script tone
-          </label>
-          <select
-            id="script-tone"
-            value={form.script_tone}
-            onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange("script_tone", e.target.value)}
-            className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-          >
-            {TONES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-          </select>
+      {/* ── Generation mode toggle ── */}
+      <div className="mb-6">
+        <p className="mb-2 text-sm font-medium text-gray-700">Generation mode</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {[
+            { value: "classic" as const, icon: "🎭", title: "Classic Avatar",
+              desc: "You pick the avatar. AutoFlow writes a script from a news article; HeyGen renders it with your chosen engine." },
+            { value: "agent" as const, icon: "✨", title: "Video Agent (AI-driven)",
+              desc: "Send a prompt — HeyGen picks the avatar, writes the script, and composes the full scene automatically." },
+          ].map((opt) => (
+            <label key={opt.value}
+              className={`relative flex cursor-pointer flex-col gap-2 rounded-xl border-2 p-4 transition-all ${
+                form.heygen_mode === opt.value ? "border-indigo-500 bg-indigo-50" : "border-gray-200 bg-white hover:border-gray-300"
+              }`}
+            >
+              <input type="radio" name="heygen_mode" value={opt.value}
+                checked={form.heygen_mode === opt.value}
+                onChange={() => onChange("heygen_mode", opt.value)}
+                className="sr-only"
+              />
+              <div className="flex items-center gap-2">
+                <span className="text-xl">{opt.icon}</span>
+                <span className="text-sm font-semibold text-gray-900">{opt.title}</span>
+                {form.heygen_mode === opt.value && (
+                  <svg className="ml-auto h-4 w-4 shrink-0 text-indigo-600" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                  </svg>
+                )}
+              </div>
+              <p className="text-xs text-gray-500">{opt.desc}</p>
+            </label>
+          ))}
         </div>
       </div>
+
+      {/* ── CLASSIC MODE ── */}
+      {form.heygen_mode === "classic" && (
+        <>
+          {/* Niche keyword */}
+          <div className="mb-5">
+            <label htmlFor="niche-keyword" className="mb-1 block text-sm font-medium text-gray-700">
+              Niche keyword <span className="text-red-500">*</span>
+            </label>
+            <input id="niche-keyword" type="text"
+              value={form.niche_keyword}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("niche_keyword", e.target.value)}
+              maxLength={200} placeholder="e.g. artificial intelligence, crypto, fitness"
+              aria-invalid={!!errors.niche_keyword}
+              className={`block w-full rounded-lg border px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 ${
+                errors.niche_keyword ? "border-red-300 focus:border-red-500 focus:ring-red-500" : "border-gray-300 focus:border-indigo-500 focus:ring-indigo-500"
+              }`}
+            />
+            <p className="mt-1 text-xs text-gray-400">AutoFlow searches Google News for recent articles on this topic to generate each video.</p>
+            <FieldError message={errors.niche_keyword} />
+          </div>
+
+          {/* Engine selection */}
+          <div className="mb-5">
+            <p className="mb-2 text-sm font-medium text-gray-700">Rendering engine</p>
+            <div className="grid gap-3">
+              {HEYGEN_ENGINES.map((eng) => (
+                <label key={eng.value}
+                  className={`flex cursor-pointer items-start gap-4 rounded-xl border-2 p-4 transition-all ${
+                    form.heygen_engine === eng.value ? "border-indigo-500 bg-indigo-50" : "border-gray-200 bg-white hover:border-gray-300"
+                  }`}
+                >
+                  <input type="radio" name="heygen_engine" value={eng.value}
+                    checked={form.heygen_engine === eng.value}
+                    onChange={() => onChange("heygen_engine", eng.value)}
+                    className="mt-1 h-4 w-4 shrink-0 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-semibold text-gray-900">{eng.label}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${eng.badgeColor}`}>{eng.badge}</span>
+                      <span className="ml-auto text-xs text-gray-400">{eng.credits}</span>
+                    </div>
+                    <p className="mt-0.5 text-xs text-gray-500">{eng.description}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-gray-400">
+              Avatar III costs <strong>3 credits/min</strong> vs 20 for IV/V — best for high-volume cost-sensitive pipelines.
+            </p>
+          </div>
+
+          {/* Avatar ID + Voice ID */}
+          <div className="mb-5 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="heygen-avatar-id" className="mb-1 block text-sm font-medium text-gray-700">
+                Avatar ID <span className="text-xs font-normal text-gray-400">(optional)</span>
+              </label>
+              <input id="heygen-avatar-id" type="text"
+                value={form.heygen_avatar_id}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("heygen_avatar_id", e.target.value)}
+                placeholder="e.g. avatar_abc123"
+                className="block w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+              <p className="mt-1 text-xs text-gray-400">HeyGen → Avatars → look ID. Blank = account default.</p>
+            </div>
+            <div>
+              <label htmlFor="heygen-voice-id" className="mb-1 block text-sm font-medium text-gray-700">
+                Voice ID <span className="text-xs font-normal text-gray-400">(optional)</span>
+              </label>
+              <input id="heygen-voice-id" type="text"
+                value={form.heygen_voice_id}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("heygen_voice_id", e.target.value)}
+                placeholder="e.g. voice_en_us_abc"
+                className="block w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+              <p className="mt-1 text-xs text-gray-400">HeyGen → Voices. Blank = avatar&apos;s default voice.</p>
+            </div>
+          </div>
+
+          {/* Resolution + Aspect ratio */}
+          <div className="mb-5 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="heygen-resolution" className="mb-1 block text-sm font-medium text-gray-700">Output resolution</label>
+              <select id="heygen-resolution" value={form.heygen_resolution}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange("heygen_resolution", e.target.value)}
+                className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              >
+                {HEYGEN_RESOLUTIONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="heygen-aspect-ratio" className="mb-1 block text-sm font-medium text-gray-700">Aspect ratio</label>
+              <select id="heygen-aspect-ratio" value={form.heygen_aspect_ratio}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange("heygen_aspect_ratio", e.target.value)}
+                className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              >
+                {HEYGEN_ASPECT_RATIOS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Language + Tone */}
+          <div className="mb-5 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="video-language" className="mb-1 block text-sm font-medium text-gray-700">Video language</label>
+              <select id="video-language" value={form.video_language}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange("video_language", e.target.value)}
+                className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              >
+                {LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="script-tone" className="mb-1 block text-sm font-medium text-gray-700">Script tone</label>
+              <select id="script-tone" value={form.script_tone}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange("script_tone", e.target.value)}
+                className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              >
+                {TONES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Advanced */}
+          <details className="rounded-lg border border-gray-200 bg-gray-50">
+            <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-gray-600 select-none hover:text-gray-900">Advanced settings</summary>
+            <div className="border-t border-gray-200 px-4 py-4">
+              {(form.heygen_engine === "avatar_v" || form.heygen_engine === "avatar_iii") && (
+                <div className="mb-4">
+                  <label htmlFor="motion-prompt" className="mb-1 block text-sm font-medium text-gray-700">
+                    Motion prompt <span className="text-xs font-normal text-gray-400">(Avatar V + photo avatars)</span>
+                  </label>
+                  <input id="motion-prompt" type="text"
+                    value={form.heygen_motion_prompt}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("heygen_motion_prompt", e.target.value)}
+                    placeholder="e.g. Speak with hand gestures, look directly at camera"
+                    className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                  <p className="mt-1 text-xs text-gray-400">Natural-language hint for body motion and gestures.</p>
+                </div>
+              )}
+              <div className="mb-4">
+                <label htmlFor="openai-model" className="mb-1 block text-sm font-medium text-gray-700">OpenAI model for script writing</label>
+                <select id="openai-model" value={form.openai_model}
+                  onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange("openai_model", e.target.value)}
+                  className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                >
+                  {OPENAI_MODELS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+                <p className="mt-1 text-xs text-gray-400">Uses your saved OpenAI key; falls back to the platform key.</p>
+              </div>
+              <div className="mb-2">
+                <label htmlFor="target-duration" className="mb-1 block text-sm font-medium text-gray-700">
+                  Target duration: <strong>{form.target_duration_secs}s</strong>
+                </label>
+                <input id="target-duration" type="range" min={30} max={300} step={15}
+                  value={form.target_duration_secs}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("target_duration_secs", Number(e.target.value))}
+                  className="w-full accent-indigo-600"
+                />
+                <div className="mt-1 flex justify-between text-xs text-gray-400">
+                  <span>30s</span><span>1 min</span><span>2.5 min</span><span>5 min</span>
+                </div>
+              </div>
+            </div>
+          </details>
+        </>
+      )}
+
+      {/* ── AGENT MODE ── */}
+      {form.heygen_mode === "agent" && (
+        <>
+          <InfoBox>
+            <strong>Video Agent</strong> handles everything — avatar selection, scripting, and scene composition.
+            Leave the prompt blank to let AutoFlow build one automatically from the fetched news article.
+          </InfoBox>
+
+          {/* Niche keyword */}
+          <div className="mb-5">
+            <label htmlFor="niche-keyword-agent" className="mb-1 block text-sm font-medium text-gray-700">
+              Niche keyword <span className="text-red-500">*</span>
+            </label>
+            <input id="niche-keyword-agent" type="text"
+              value={form.niche_keyword}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("niche_keyword", e.target.value)}
+              maxLength={200} placeholder="e.g. artificial intelligence, crypto, fitness"
+              aria-invalid={!!errors.niche_keyword}
+              className={`block w-full rounded-lg border px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 ${
+                errors.niche_keyword ? "border-red-300 focus:border-red-500 focus:ring-red-500" : "border-gray-300 focus:border-indigo-500 focus:ring-indigo-500"
+              }`}
+            />
+            <p className="mt-1 text-xs text-gray-400">Used to fetch a news article that feeds into the agent&apos;s prompt automatically.</p>
+            <FieldError message={errors.niche_keyword} />
+          </div>
+
+          {/* Agent prompt */}
+          <div className="mb-5">
+            <label htmlFor="agent-prompt" className="mb-1 block text-sm font-medium text-gray-700">
+              Video Agent prompt <span className="text-xs font-normal text-gray-400">(optional override)</span>
+            </label>
+            <textarea id="agent-prompt" rows={4}
+              value={form.heygen_agent_prompt}
+              onChange={(e: ChangeEvent<HTMLTextAreaElement>) => onChange("heygen_agent_prompt", e.target.value)}
+              placeholder={"e.g. Create a 60-second professional video about the latest AI news. Portrait orientation, suitable for TikTok and Instagram Reels. Keep it engaging with clear data points."}
+              maxLength={2000}
+              className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            />
+            <p className="mt-1 text-xs text-gray-400">
+              Left blank → AutoFlow builds a prompt from the article + niche + tone. Max 2,000 characters.
+            </p>
+          </div>
+
+          {/* Orientation */}
+          <div className="mb-5">
+            <p className="mb-2 text-sm font-medium text-gray-700">Orientation</p>
+            <div className="flex gap-3">
+              {[
+                { value: "portrait" as const,  label: "Portrait (9:16)", hint: "TikTok, Reels, Shorts" },
+                { value: "landscape" as const, label: "Landscape (16:9)", hint: "YouTube, LinkedIn" },
+              ].map(opt => (
+                <label key={opt.value}
+                  className={`flex flex-1 cursor-pointer flex-col gap-1 rounded-xl border-2 p-3 transition-all ${
+                    form.heygen_orientation === opt.value ? "border-indigo-500 bg-indigo-50" : "border-gray-200 bg-white hover:border-gray-300"
+                  }`}
+                >
+                  <input type="radio" name="heygen_orientation" value={opt.value}
+                    checked={form.heygen_orientation === opt.value}
+                    onChange={() => onChange("heygen_orientation", opt.value)}
+                    className="sr-only"
+                  />
+                  <span className="text-sm font-medium text-gray-900">{opt.label}</span>
+                  <span className="text-xs text-gray-400">{opt.hint}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Optional avatar/voice hint */}
+          <div className="mb-5 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="agent-avatar-id" className="mb-1 block text-sm font-medium text-gray-700">
+                Preferred avatar ID <span className="text-xs font-normal text-gray-400">(optional)</span>
+              </label>
+              <input id="agent-avatar-id" type="text"
+                value={form.heygen_avatar_id}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("heygen_avatar_id", e.target.value)}
+                placeholder="Leave blank — agent chooses"
+                className="block w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </div>
+            <div>
+              <label htmlFor="agent-voice-id" className="mb-1 block text-sm font-medium text-gray-700">
+                Preferred voice ID <span className="text-xs font-normal text-gray-400">(optional)</span>
+              </label>
+              <input id="agent-voice-id" type="text"
+                value={form.heygen_voice_id}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("heygen_voice_id", e.target.value)}
+                placeholder="Leave blank — agent chooses"
+                className="block w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </div>
+          </div>
+
+          {/* Tone + Language for auto-prompt */}
+          <div className="mb-5 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="script-tone-agent" className="mb-1 block text-sm font-medium text-gray-700">
+                Tone <span className="text-xs font-normal text-gray-400">(for auto-prompt)</span>
+              </label>
+              <select id="script-tone-agent" value={form.script_tone}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange("script_tone", e.target.value)}
+                className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              >
+                {TONES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="video-language-agent" className="mb-1 block text-sm font-medium text-gray-700">Language</label>
+              <select id="video-language-agent" value={form.video_language}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange("video_language", e.target.value)}
+                className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              >
+                {LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
+              </select>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Advanced settings — collapsed by default */}
       <details className="rounded-lg border border-gray-200 bg-gray-50">
@@ -950,7 +1255,15 @@ export default function NewPipelinePage() {
     video_source:          "heygen",
     name:                  "",
     niche_keyword:         "",
+    heygen_mode:           "classic",
+    heygen_engine:         "avatar_iv",
     heygen_avatar_id:      "",
+    heygen_voice_id:       "",
+    heygen_resolution:     "1080p",
+    heygen_aspect_ratio:   "9:16",
+    heygen_motion_prompt:  "",
+    heygen_agent_prompt:   "",
+    heygen_orientation:    "portrait",
     video_language:        "English",
     script_tone:           "professional",
     openai_model:          "gpt-4o-mini",
@@ -1022,13 +1335,6 @@ export default function NewPipelinePage() {
       const supabase = (await import("@/lib/supabase/client")).createClient();
       const { data: { session } } = await supabase.auth.getSession();
 
-      // Map language display name → language code (HeyGen/OpenAI prefer short codes)
-      const langMap: Record<string, string> = {
-        English: "English", Spanish: "Spanish", French: "French",
-        German: "German", Portuguese: "Portuguese", Arabic: "Arabic",
-        Hindi: "Hindi", Japanese: "Japanese", Korean: "Korean", Chinese: "Chinese",
-      };
-
       const payload: Record<string, unknown> = {
         name:                 form.name.trim(),
         niche_keyword:        (form.niche_keyword.trim() || form.name.trim()),
@@ -1037,12 +1343,22 @@ export default function NewPipelinePage() {
         schedule_time_hhmm:   form.time,
         schedule_timezone:    form.timezone,
         ...(form.recurrence === "custom" ? { schedule_days_of_week: form.custom_days } : {}),
-        // Optional config
-        ...(form.heygen_avatar_id.trim() ? { heygen_avatar_id: form.heygen_avatar_id.trim() } : {}),
-        ...(form.script_tone            ? { script_tone: form.script_tone } : {}),
-        ...(form.video_language         ? { video_language: langMap[form.video_language] ?? form.video_language } : {}),
-        ...(form.openai_model           ? { openai_model: form.openai_model } : {}),
-        ...(form.target_duration_secs   ? { target_duration_secs: form.target_duration_secs } : {}),
+        // HeyGen config
+        heygen_mode:          form.heygen_mode,
+        heygen_engine:        form.heygen_engine,
+        ...(form.heygen_avatar_id.trim()     ? { heygen_avatar_id:     form.heygen_avatar_id.trim() }     : {}),
+        ...(form.heygen_voice_id.trim()      ? { heygen_voice_id:      form.heygen_voice_id.trim() }      : {}),
+        heygen_resolution:    form.heygen_resolution,
+        heygen_aspect_ratio:  form.heygen_aspect_ratio,
+        ...(form.heygen_motion_prompt.trim() ? { heygen_motion_prompt: form.heygen_motion_prompt.trim() } : {}),
+        ...(form.heygen_agent_prompt.trim()  ? { heygen_agent_prompt:  form.heygen_agent_prompt.trim() }  : {}),
+        heygen_orientation:   form.heygen_orientation,
+        // Content config
+        ...(form.script_tone           ? { script_tone:           form.script_tone }                              : {}),
+        ...(form.video_language        ? { video_language:        form.video_language }                           : {}),
+        ...(form.openai_model          ? { openai_model:          form.openai_model }                             : {}),
+        ...(form.target_duration_secs  ? { target_duration_secs:  form.target_duration_secs }                     : {}),
+        // Drive storage
         ...(form.save_to_drive && form.gdrive_folder_id.trim()
           ? { gdrive_folder_id: form.gdrive_folder_id.trim() }
           : {}),

@@ -13,9 +13,17 @@ interface CreatePipelineBody {
   schedule_time_hhmm: string;
   schedule_timezone: string;
   schedule_days_of_week?: number[];
-  // Optional configuration fields
+  // AI / content config
   openai_model?: string;
   heygen_avatar_id?: string;
+  heygen_engine?: string;           // 'avatar_v' | 'avatar_iv' | 'avatar_iii'
+  heygen_mode?: string;             // 'classic' | 'agent'
+  heygen_voice_id?: string;
+  heygen_resolution?: string;       // '1080p' | '720p' | '4k'
+  heygen_aspect_ratio?: string;     // '9:16' | '16:9' | '1:1' | '4:5'
+  heygen_motion_prompt?: string;
+  heygen_agent_prompt?: string;
+  heygen_orientation?: string;      // 'portrait' | 'landscape'
   video_language?: string;
   script_tone?: string;
   target_duration_secs?: number;
@@ -85,6 +93,29 @@ export async function createPipelineRoute(app: FastifyInstance): Promise<void> {
             },
             openai_model: { type: 'string' },
             heygen_avatar_id: { type: 'string' },
+            heygen_engine: {
+              type: 'string',
+              enum: ['avatar_v', 'avatar_iv', 'avatar_iii'],
+            },
+            heygen_mode: {
+              type: 'string',
+              enum: ['classic', 'agent'],
+            },
+            heygen_voice_id: { type: 'string' },
+            heygen_resolution: {
+              type: 'string',
+              enum: ['1080p', '720p', '4k'],
+            },
+            heygen_aspect_ratio: {
+              type: 'string',
+              enum: ['9:16', '16:9', '1:1', '4:5'],
+            },
+            heygen_motion_prompt: { type: 'string' },
+            heygen_agent_prompt: { type: 'string' },
+            heygen_orientation: {
+              type: 'string',
+              enum: ['portrait', 'landscape'],
+            },
             video_language: { type: 'string' },
             script_tone: { type: 'string' },
             target_duration_secs: { type: 'number' },
@@ -145,7 +176,7 @@ export async function createPipelineRoute(app: FastifyInstance): Promise<void> {
 
       if (!credential) {
         throw AppError.badRequest(
-          'HeyGen API key required. Add your key in Settings > Credentials.',
+          'HeyGen API key required. Add your key in Settings → Credentials before creating a pipeline.',
         );
       }
 
@@ -178,6 +209,14 @@ export async function createPipelineRoute(app: FastifyInstance): Promise<void> {
           schedule_cron_utc: cronExpression,
           openai_model: body.openai_model ?? null,
           heygen_avatar_id: body.heygen_avatar_id ?? null,
+          heygen_engine: body.heygen_engine ?? 'avatar_iv',
+          heygen_mode: body.heygen_mode ?? 'classic',
+          heygen_voice_id: body.heygen_voice_id ?? null,
+          heygen_resolution: body.heygen_resolution ?? '1080p',
+          heygen_aspect_ratio: body.heygen_aspect_ratio ?? '9:16',
+          heygen_motion_prompt: body.heygen_motion_prompt ?? null,
+          heygen_agent_prompt: body.heygen_agent_prompt ?? null,
+          heygen_orientation: body.heygen_orientation ?? 'portrait',
           video_language: body.video_language ?? null,
           script_tone: body.script_tone ?? null,
           target_duration_secs: body.target_duration_secs ?? null,

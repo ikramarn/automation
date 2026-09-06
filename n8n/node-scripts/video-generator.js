@@ -3,6 +3,15 @@
  * Standalone logic for the Video_Generator and File_Stager n8n nodes.
  * Exported functions can be unit-tested independently of n8n.
  *
+ * HeyGen v3 API — supports:
+ *   - Classic avatar video  : POST /v3/videos  (avatar_id + script + engine)
+ *   - Video Agent           : POST /v3/video-agents  (prompt → HeyGen does everything)
+ *
+ * Engines (classic mode only):
+ *   avatar_v   — highest fidelity, full-body realism, 20 credits/min, explicit opt-in
+ *   avatar_iv  — default, expressive facial motion, 20 credits/min
+ *   avatar_iii — fast precise lip-sync, 3 credits/min (cheapest), photo avatars only
+ *
  * Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 9.8, 9.9
  */
 
@@ -10,34 +19,14 @@
 // Sleep helper
 // ---------------------------------------------------------------------------
 
-/**
- * Wait for the given number of milliseconds.
- *
- * @param {number} ms
- * @returns {Promise<void>}
- */
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ---------------------------------------------------------------------------
-// Edge-case helpers (exported for testing)
+// Helpers (exported for testing)
 // ---------------------------------------------------------------------------
 
-/**
- * Build the R2 object key for a given execution.
- * Returns: {userId}/{pipelineId}/{executionId}/video.mp4
- *
- * Note: The leading slash is intentionally omitted to produce a valid
- * S3-compatible object key (keys must not start with "/").
- * The design document shows the bucket structure with a leading slash
- * for illustration only.
- *
- * @param {string} userId
- * @param {string} pipelineId
- * @param {string} executionId
- * @returns {string}
- */
 function buildR2ObjectKey(userId, pipelineId, executionId) {
   return `${userId}/${pipelineId}/${executionId}/video.mp4`;
 }
@@ -45,155 +34,178 @@ function buildR2ObjectKey(userId, pipelineId, executionId) {
 /**
  * Parse a HeyGen API response and return the appropriate error message.
  *
- * Covers:
- *   - HTTP 401 / 403 → "HeyGen API key invalid or credits exhausted" (Req 9.5)
- *   - Response body auth codes (40101, 40301) → same message
- *   - "failed" status with a reason in the payload → the reason string (Req 9.7)
- *   - "failed" status with no reason → "HeyGen reported failure with no reason provided" (Req 9.7)
- *   - No error condition matched → null
- *
- * @param {object|null} response - parsed response body (may be null)
- * @param {number} [statusCode=0] - HTTP status code
+ * @param {object|null} response
+ * @param {number} [statusCode=0]
  * @returns {string|null}
  */
 function parseHeyGenError(response, statusCode = 0) {
-  // HTTP-level auth errors
   if (statusCode === 401 || statusCode === 403) {
     return 'HeyGen API key invalid or credits exhausted';
   }
-
   if (!response) return null;
-
-  // Auth error codes embedded in response body
   if (response.code === 40101 || response.code === 40301) {
     return 'HeyGen API key invalid or credits exhausted';
   }
-
-  // HTTP status surfaced as a field in response body
   if (response.status === 401 || response.status === 403) {
     return 'HeyGen API key invalid or credits exhausted';
   }
-
-  // "failed" status with optional reason
   const videoStatus = response?.data?.status || response?.status;
   if (videoStatus === 'failed') {
     const reason =
       response?.data?.error?.message ||
       response?.data?.error ||
+      response?.data?.failure_message ||
       response?.error?.message ||
       response?.error ||
+      response?.failure_message ||
       null;
-    return reason
-      ? String(reason)
-      : 'HeyGen reported failure with no reason provided';
+    return reason ? String(reason) : 'HeyGen reported failure with no reason provided';
   }
-
   return null;
 }
 
-/**
- * Returns true if the HeyGen status string indicates polling should continue.
- * Polling continues for "processing" and "pending" statuses (Req 9.3).
- *
- * @param {string} status
- * @returns {boolean}
- */
 function shouldRetryPoll(status) {
-  return status === 'processing' || status === 'pending';
+  return status === 'processing' || status === 'pending' || status === 'thinking' || status === 'generating';
 }
 
-/**
- * Build the HeyGen Video Agent API request payload.
- *
- * @param {string} avatarId      - HeyGen avatar ID
- * @param {string} videoLanguage - ISO language code (e.g. "en")
- * @param {string} scriptText    - Script text spoken by the avatar
- * @returns {object} - Ready-to-serialize request body for POST /v2/video/generate
- */
-function buildHeyGenPayload(avatarId, videoLanguage, scriptText) {
-  return {
-    video_inputs: [
-      {
-        character: {
-          type: 'avatar',
-          avatar_id: avatarId,
-          avatar_style: 'normal',
-        },
-        voice: {
-          type: 'text',
-          input_text: scriptText,
-          voice_id: '',
-        },
-      },
-    ],
-    dimension: { width: 1080, height: 1920 },
-    aspect_ratio: '9:16',
-    language: videoLanguage || 'en',
-  };
-}
-
-/**
- * Extract the video generation status string from a HeyGen status-poll response.
- *
- * Handles both wrapped (`data.status`) and flat (`status`) response shapes.
- * Returns one of: "completed", "failed", "processing", or an unknown string.
- * Defaults to "processing" when the response is absent or has no status field.
- *
- * @param {object} heygenResponse - Parsed JSON response from HeyGen status endpoint
- * @returns {string} - Status string
- */
 function extractVideoStatus(heygenResponse) {
   if (!heygenResponse || typeof heygenResponse !== 'object') return 'processing';
-  return heygenResponse?.data?.status || heygenResponse?.status || 'processing';
+  return (
+    heygenResponse?.data?.status ||
+    heygenResponse?.status ||
+    'processing'
+  );
+}
+
+/**
+ * Build the v3 classic avatar video request payload.
+ *
+ * Engine mapping:
+ *   'avatar_v'   → { type: 'avatar_v' }       (highest quality, most credits)
+ *   'avatar_iv'  → { type: 'avatar_iv' }       (default, good quality)
+ *   'avatar_iii' → omitted (server default for photo avatars)
+ *
+ * @param {object} params
+ * @param {string} params.avatarId
+ * @param {string} params.voiceId       - Optional; empty string = avatar default voice
+ * @param {string} params.videoLanguage - e.g. "English"
+ * @param {string} params.scriptText
+ * @param {string} params.engine        - 'avatar_v' | 'avatar_iv' | 'avatar_iii'
+ * @param {string} params.resolution    - '1080p' | '720p' | '4k'
+ * @param {string} params.aspectRatio   - '9:16' | '16:9' | '1:1' | '4:5'
+ * @param {string} [params.motionPrompt]
+ * @returns {object}
+ */
+function buildHeyGenV3Payload(params) {
+  const {
+    avatarId,
+    voiceId       = '',
+    videoLanguage = 'English',
+    scriptText,
+    engine        = 'avatar_iv',
+    resolution    = '1080p',
+    aspectRatio   = '9:16',
+    motionPrompt  = '',
+  } = params;
+
+  const body = {
+    type: 'avatar',
+    avatar_id: avatarId,
+    script: scriptText,
+    resolution,
+    aspect_ratio: aspectRatio,
+  };
+
+  // Voice: if voiceId provided use it, otherwise HeyGen uses avatar default
+  if (voiceId) {
+    body.voice_id = voiceId;
+  }
+
+  // Engine selection (avatar_iii is the default for photo avatars — omitting
+  // the engine field lets HeyGen pick the right one automatically)
+  if (engine === 'avatar_v') {
+    body.engine = { type: 'avatar_v' };
+  } else if (engine === 'avatar_iv') {
+    body.engine = { type: 'avatar_iv' };
+  }
+  // avatar_iii: omit engine field — server picks it for photo avatars
+
+  // Motion prompt: supported by avatar_v and photo avatars on avatar_iv
+  if (motionPrompt) {
+    body.motion_prompt = motionPrompt;
+  }
+
+  return body;
+}
+
+/**
+ * Build the v3 Video Agent request payload.
+ * The agent handles scripting, avatar selection, scene composition automatically.
+ *
+ * @param {object} params
+ * @param {string} params.prompt        - Natural language description (1–10,000 chars)
+ * @param {string} [params.avatarId]    - Optional; omit to let agent choose
+ * @param {string} [params.voiceId]     - Optional; omit to let agent choose
+ * @param {string} [params.orientation] - 'portrait' | 'landscape'; auto if omitted
+ * @param {string} [params.callbackUrl]
+ * @returns {object}
+ */
+function buildHeyGenAgentPayload(params) {
+  const { prompt, avatarId = '', voiceId = '', orientation = 'portrait', callbackUrl = '' } = params;
+
+  const body = {
+    prompt,
+    mode: 'generate', // fire-and-forget (vs 'chat' for multi-turn)
+    orientation,
+  };
+
+  if (avatarId) body.avatar_id = avatarId;
+  if (voiceId)  body.voice_id  = voiceId;
+  if (callbackUrl) body.callback_url = callbackUrl;
+
+  return body;
+}
+
+// Legacy helper kept for backwards-compat with existing tests
+function buildHeyGenPayload(avatarId, videoLanguage, scriptText) {
+  return buildHeyGenV3Payload({ avatarId, videoLanguage, scriptText, engine: 'avatar_iv', resolution: '1080p', aspectRatio: '9:16' });
 }
 
 // ---------------------------------------------------------------------------
-// HeyGen: Submit video generation request (Req 9.1)
+// HeyGen: Classic video generation via POST /v3/videos
 // ---------------------------------------------------------------------------
 
 /**
- * Submit a video generation request to the HeyGen Video Agent API.
- * Returns the video_id from the response.
+ * Submit a classic avatar video request to HeyGen v3 API.
+ * Returns the video_id.
  *
  * @param {object} params
  * @param {string} params.apiKey
  * @param {string} params.avatarId
+ * @param {string} params.voiceId
  * @param {string} params.videoLanguage
  * @param {string} params.scriptText
- * @param {Function} httpPost - async (url, headers, body) => responseObject
+ * @param {string} params.engine         - 'avatar_v' | 'avatar_iv' | 'avatar_iii'
+ * @param {string} params.resolution     - '1080p' | '720p' | '4k'
+ * @param {string} params.aspectRatio    - '9:16' | '16:9' | '1:1' | '4:5'
+ * @param {string} params.motionPrompt
+ * @param {Function} httpPost
  * @returns {Promise<string>} video_id
  */
-async function submitHeyGenVideo({ apiKey, avatarId, videoLanguage, scriptText }, httpPost) {
-  const url = 'https://api.heygen.com/v2/video/generate';
+async function submitHeyGenVideo(params, httpPost) {
+  const { apiKey, ...rest } = params;
+
+  const url = 'https://api.heygen.com/v3/videos';
   const headers = {
     'Content-Type': 'application/json',
     'X-Api-Key': apiKey,
   };
-  const body = {
-    video_inputs: [
-      {
-        character: {
-          type: 'avatar',
-          avatar_id: avatarId,
-          avatar_style: 'normal',
-        },
-        voice: {
-          type: 'text',
-          input_text: scriptText,
-          voice_id: '',
-        },
-      },
-    ],
-    dimension: { width: 1080, height: 1920 },
-    aspect_ratio: '9:16',
-    language: videoLanguage || 'en',
-  };
+  const body = buildHeyGenV3Payload(rest);
 
   let response;
   try {
     response = await httpPost(url, headers, body);
   } catch (err) {
-    // Surface HTTP-level errors (4xx/5xx) with their status code if available
     const status = err.status || err.statusCode || 0;
     if (status === 401 || status === 403) {
       throw new Error('HeyGen API key invalid or credits exhausted');
@@ -203,11 +215,11 @@ async function submitHeyGenVideo({ apiKey, avatarId, videoLanguage, scriptText }
 
   const data = typeof response === 'string' ? JSON.parse(response) : response;
 
-  // Check for auth errors in response body
   if (data && (data.code === 40101 || data.code === 40301)) {
     throw new Error('HeyGen API key invalid or credits exhausted');
   }
 
+  // v3 response: { data: { video_id: '...' } }
   const videoId = data?.data?.video_id || data?.video_id;
   if (!videoId) {
     throw new Error('HeyGen did not return a video_id');
@@ -217,146 +229,208 @@ async function submitHeyGenVideo({ apiKey, avatarId, videoLanguage, scriptText }
 }
 
 // ---------------------------------------------------------------------------
-// HeyGen: Poll status endpoint (Req 9.3, 9.4, 9.5, 9.7)
+// HeyGen: Video Agent via POST /v3/video-agents
 // ---------------------------------------------------------------------------
 
 /**
- * Poll the HeyGen status endpoint until the video is "completed" or "failed",
- * or until maxPolls is reached.
+ * Submit a Video Agent request to HeyGen.
+ * Returns { sessionId, videoId } — videoId may be null initially and needs polling.
  *
- * Polling interval: 30 seconds (POLL_INTERVAL_MS).
- * Maximum polls: 60 (= 30 minutes).
+ * @param {object} params
+ * @param {string} params.apiKey
+ * @param {string} params.prompt
+ * @param {string} [params.avatarId]
+ * @param {string} [params.voiceId]
+ * @param {string} [params.orientation]
+ * @param {Function} httpPost
+ * @returns {Promise<{ sessionId: string, videoId: string|null }>}
+ */
+async function submitHeyGenAgent(params, httpPost) {
+  const { apiKey, ...rest } = params;
+
+  const url = 'https://api.heygen.com/v3/video-agents';
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-Api-Key': apiKey,
+  };
+  const body = buildHeyGenAgentPayload(rest);
+
+  let response;
+  try {
+    response = await httpPost(url, headers, body);
+  } catch (err) {
+    const status = err.status || err.statusCode || 0;
+    if (status === 401 || status === 403) {
+      throw new Error('HeyGen API key invalid or credits exhausted');
+    }
+    throw err;
+  }
+
+  const data = typeof response === 'string' ? JSON.parse(response) : response;
+
+  if (data && (data.code === 40101 || data.code === 40301)) {
+    throw new Error('HeyGen API key invalid or credits exhausted');
+  }
+
+  const sessionId = data?.session_id || data?.data?.session_id;
+  if (!sessionId) {
+    throw new Error('HeyGen Video Agent did not return a session_id');
+  }
+
+  // video_id may already be present or null at this stage
+  const videoId = data?.video_id || data?.data?.video_id || null;
+
+  return { sessionId, videoId };
+}
+
+/**
+ * Poll the Video Agent session until video_id is assigned, then poll the
+ * video until completed.
  *
- * Returns the completed video URL on success.
- * Throws descriptive errors on 401/403, failure status, or timeout.
+ * Two-phase polling:
+ *   Phase 1: GET /v3/video-agents/{sessionId} — wait for video_id (status: thinking → generating)
+ *   Phase 2: GET /v3/videos/{videoId} — wait for video_url (status: pending → processing → completed)
+ *
+ * @param {string} sessionId
+ * @param {string|null} initialVideoId  - If already assigned from the create response
+ * @param {string} apiKey
+ * @param {number} [maxPolls=90]        - Total polls across both phases (90 × 20s = 30 min)
+ * @param {Function} httpGet
+ * @returns {Promise<string>} video download URL
+ */
+async function pollHeyGenAgentStatus(sessionId, initialVideoId, apiKey, maxPolls = 90, httpGet) {
+  const POLL_INTERVAL_MS = 20_000;
+  const headers = { 'X-Api-Key': apiKey };
+
+  let videoId = initialVideoId;
+  let polls = 0;
+
+  // Phase 1: wait for video_id to be assigned to the session
+  while (!videoId && polls < maxPolls) {
+    if (polls > 0) await sleep(POLL_INTERVAL_MS);
+    polls++;
+
+    let resp;
+    try {
+      resp = await httpGet(`https://api.heygen.com/v3/video-agents/${sessionId}`, headers);
+    } catch (err) {
+      const status = err.status || err.statusCode || 0;
+      if (status === 401 || status === 403) throw new Error('HeyGen API key invalid or credits exhausted');
+      continue;
+    }
+
+    const data = typeof resp === 'string' ? JSON.parse(resp) : resp;
+    if (data?.code === 40101 || data?.code === 40301) throw new Error('HeyGen API key invalid or credits exhausted');
+
+    videoId = data?.video_id || data?.data?.video_id || null;
+
+    const sessionStatus = data?.status || data?.data?.status || '';
+    if (sessionStatus === 'failed') {
+      const msg = data?.failure_message || data?.data?.failure_message || 'Video Agent failed';
+      throw new Error(msg);
+    }
+  }
+
+  if (!videoId) throw new Error('HeyGen Video Agent timed out before video_id was assigned');
+
+  // Phase 2: poll video until completed
+  return pollHeyGenStatus(videoId, apiKey, maxPolls - polls, httpGet);
+}
+
+// ---------------------------------------------------------------------------
+// HeyGen: Poll video status via GET /v3/videos/{videoId}
+// ---------------------------------------------------------------------------
+
+/**
+ * Poll until video_url is ready. Works for both classic and agent videos.
  *
  * @param {string} videoId
  * @param {string} apiKey
  * @param {number} [maxPolls=60]
- * @param {Function} httpGet - async (url, headers) => responseObject
- * @returns {Promise<string>} - video download URL
+ * @param {Function} httpGet
+ * @returns {Promise<string>} video download URL
  */
 async function pollHeyGenStatus(videoId, apiKey, maxPolls = 60, httpGet) {
   const POLL_INTERVAL_MS = 30_000;
-  const url = `https://api.heygen.com/v1/video_status.get?video_id=${videoId}`;
+  // Try the v3 endpoint first; v1 kept as legacy fallback for backwards compat
+  const urlV3 = `https://api.heygen.com/v3/videos/${videoId}`;
   const headers = { 'X-Api-Key': apiKey };
 
   for (let poll = 0; poll < maxPolls; poll++) {
-    // Wait before polling (except on first poll — we wait first to give HeyGen
-    // time to start processing; alternatively wait after. We wait before each
-    // poll including the first to keep the loop uniform and the test simple.)
-    if (poll > 0) {
-      await sleep(POLL_INTERVAL_MS);
-    }
+    if (poll > 0) await sleep(POLL_INTERVAL_MS);
 
     let response;
     try {
-      response = await httpGet(url, headers);
+      response = await httpGet(urlV3, headers);
     } catch (err) {
       const status = err.status || err.statusCode || 0;
-      if (status === 401 || status === 403) {
-        throw new Error('HeyGen API key invalid or credits exhausted');
+      if (status === 401 || status === 403) throw new Error('HeyGen API key invalid or credits exhausted');
+      // 404 on v3 — fall back to v1 legacy endpoint
+      if (status === 404) {
+        try {
+          const legacyUrl = `https://api.heygen.com/v1/video_status.get?video_id=${videoId}`;
+          response = await httpGet(legacyUrl, headers);
+        } catch {
+          continue;
+        }
+      } else {
+        continue;
       }
-      // Transient network error — continue polling
-      continue;
     }
 
     const data = typeof response === 'string' ? JSON.parse(response) : response;
 
-    // Auth error in response body
-    if (data?.code === 40101 || data?.code === 40301) {
-      throw new Error('HeyGen API key invalid or credits exhausted');
-    }
+    if (data?.code === 40101 || data?.code === 40301) throw new Error('HeyGen API key invalid or credits exhausted');
+    if (data?.status === 401 || data?.status === 403)  throw new Error('HeyGen API key invalid or credits exhausted');
 
-    // HTTP-layer auth error surfaced as a response code field
-    if (data?.status === 401 || data?.status === 403) {
-      throw new Error('HeyGen API key invalid or credits exhausted');
-    }
-
-    const videoStatus = data?.data?.status || data?.status;
+    // v3 shape: { id, status, video_url, ... }
+    // v1 shape: { data: { status, video_url } }
+    const videoStatus = data?.status || data?.data?.status || 'processing';
 
     if (videoStatus === 'completed') {
-      const videoUrl = data?.data?.video_url || data?.video_url;
-      if (!videoUrl) {
-        throw new Error('HeyGen returned completed status but no video_url');
-      }
+      const videoUrl = data?.video_url || data?.data?.video_url;
+      if (!videoUrl) throw new Error('HeyGen returned completed status but no video_url');
       return videoUrl;
     }
 
     if (videoStatus === 'failed') {
       const reason =
+        data?.failure_message ||
         data?.data?.error?.message ||
         data?.data?.error ||
         data?.error?.message ||
         data?.error ||
         null;
-      throw new Error(
-        reason
-          ? String(reason)
-          : 'HeyGen reported failure with no reason provided'
-      );
+      throw new Error(reason ? String(reason) : 'HeyGen reported failure with no reason provided');
     }
 
-    // Status is "processing" or unknown — continue polling
+    // pending / processing / thinking / generating → continue polling
   }
 
-  // Exhausted all polls
   throw new Error('HeyGen generation timeout');
 }
 
 // ---------------------------------------------------------------------------
-// R2 upload (Req 9.6, 9.8)
+// R2 upload (Req 9.6, 9.8) — unchanged
 // ---------------------------------------------------------------------------
 
-/**
- * Download a video from a URL and upload it to Cloudflare R2.
- *
- * The R2 object key follows the pattern:
- *   /{user_id}/{pipeline_id}/{execution_id}/video.mp4
- *
- * On download failure, retries once after 30 seconds.
- * On retry failure, throws "HeyGen video download failed".
- *
- * @param {string} videoUrl - HeyGen CDN URL to download from
- * @param {object} r2Config
- * @param {string} r2Config.accessKeyId
- * @param {string} r2Config.secretAccessKey
- * @param {string} r2Config.endpoint
- * @param {string} r2Config.bucketName
- * @param {object} executionPath
- * @param {string} executionPath.user_id
- * @param {string} executionPath.pipeline_id
- * @param {string} executionPath.execution_id
- * @param {Function} httpGet - async (url) => { data: Buffer|Uint8Array, contentType: string, size: number }
- * @param {Function} r2Put - async (bucketName, objectKey, data, contentType, r2Config) => void
- * @returns {Promise<{ r2_object_key: string, video_file_size_bytes: number }>}
- */
 async function uploadToR2(videoUrl, r2Config, executionPath, httpGet, r2Put) {
   const { user_id, pipeline_id, execution_id } = executionPath;
   const objectKey = `${user_id}/${pipeline_id}/${execution_id}/video.mp4`;
 
-  /**
-   * Attempt to download and upload. Returns result on success, null on failure.
-   * @returns {Promise<{ r2_object_key: string, video_file_size_bytes: number }|null>}
-   */
   async function attempt() {
     try {
       const { data, contentType, size } = await httpGet(videoUrl);
       await r2Put(r2Config.bucketName, objectKey, data, contentType || 'video/mp4', r2Config);
-      return {
-        r2_object_key: objectKey,
-        video_file_size_bytes: size,
-      };
+      return { r2_object_key: objectKey, video_file_size_bytes: size };
     } catch {
       return null;
     }
   }
 
-  // First attempt
   let result = await attempt();
   if (result !== null) return result;
 
-  // Retry once after 30 seconds (Req 9.6)
   await sleep(30_000);
   result = await attempt();
   if (result !== null) return result;
@@ -369,69 +443,132 @@ async function uploadToR2(videoUrl, r2Config, executionPath, httpGet, r2Put) {
 // ---------------------------------------------------------------------------
 
 /**
- * Run the full video-generation pipeline:
- * 1. Submit HeyGen video generation request.
- * 2. Poll for completion.
- * 3. Upload to R2.
+ * Run the full video-generation pipeline.
  *
- * @param {object} ctx - n8n execution context
- * @param {Function} httpPost - async (url, headers, body) => responseObject
- * @param {Function} httpGet  - async (url, headers?) => responseObject
- * @param {Function} r2Put   - async (bucket, key, data, contentType, r2Config) => void
- * @returns {Promise<{
- *   heygen_video_id: string,
- *   r2_object_key: string,
- *   video_file_size_bytes: number,
- *   video_gen_status: string
- * }>}
+ * Supports two modes via ctx.heygen_mode:
+ *   'classic' (default) — classic avatar video: needs avatar_id + script_text + engine
+ *   'agent'             — Video Agent: sends a prompt, HeyGen handles everything
+ *
+ * New context fields consumed:
+ *   ctx.heygen_mode          — 'classic' | 'agent'  (default: 'classic')
+ *   ctx.heygen_engine        — 'avatar_v' | 'avatar_iv' | 'avatar_iii'  (classic only, default: 'avatar_iv')
+ *   ctx.heygen_voice_id      — optional voice ID
+ *   ctx.heygen_resolution    — '1080p' | '720p' | '4k'  (default: '1080p')
+ *   ctx.heygen_aspect_ratio  — '9:16' | '16:9' | '1:1' | '4:5'  (default: '9:16')
+ *   ctx.heygen_motion_prompt — optional natural-language motion/gesture hint
+ *   ctx.heygen_agent_prompt  — full prompt for Video Agent mode
+ *   ctx.heygen_orientation   — 'portrait' | 'landscape'  (agent only, default: 'portrait')
+ *
+ * @param {object} ctx
+ * @param {Function} httpPost
+ * @param {Function} httpGet
+ * @param {Function} r2Put
  */
 async function runVideoGenerator(ctx, httpPost, httpGet, r2Put) {
   const apiKey = ctx.credentials?.heygen_api_key;
+  if (!apiKey) throw new Error('HeyGen API key not configured');
 
-  // Req 9.9
-  if (!apiKey) {
-    throw new Error('HeyGen API key not configured');
-  }
+  const mode           = ctx.heygen_mode        || 'classic';
+  const engine         = ctx.heygen_engine       || 'avatar_iv';
+  const voiceId        = ctx.heygen_voice_id     || '';
+  const resolution     = ctx.heygen_resolution   || '1080p';
+  const aspectRatio    = ctx.heygen_aspect_ratio || '9:16';
+  const motionPrompt   = ctx.heygen_motion_prompt || '';
 
-  const avatarId = ctx.heygen_avatar_id || '';
-  const videoLanguage = ctx.video_language || 'en';
-  const scriptText = ctx.script_text || '';
-
-  // Req 9.1, 9.2: Submit and get video_id
-  const videoId = await submitHeyGenVideo(
-    { apiKey, avatarId, videoLanguage, scriptText },
-    httpPost
-  );
-
-  // Req 9.3, 9.4, 9.5, 9.7: Poll for completion
-  const videoUrl = await pollHeyGenStatus(videoId, apiKey, 60, httpGet);
-
-  // Req 9.6, 9.8: Download and upload to R2
   const r2Config = {
-    accessKeyId: ctx.credentials.r2_access_key_id || '',
+    accessKeyId:     ctx.credentials.r2_access_key_id    || '',
     secretAccessKey: ctx.credentials.r2_secret_access_key || '',
-    endpoint: ctx.credentials.r2_endpoint || '',
-    bucketName: ctx.credentials.r2_bucket_name || '',
+    endpoint:        ctx.credentials.r2_endpoint          || '',
+    bucketName:      ctx.credentials.r2_bucket_name       || '',
   };
 
-  const { r2_object_key, video_file_size_bytes } = await uploadToR2(
-    videoUrl,
-    r2Config,
-    {
-      user_id: ctx.user_id,
-      pipeline_id: ctx.pipeline_id,
-      execution_id: ctx.execution_id,
-    },
-    httpGet,
-    r2Put
-  );
+  let videoId;
+  let sessionId = null;
 
-  return {
-    heygen_video_id: videoId,
-    r2_object_key,
-    video_file_size_bytes,
-    video_gen_status: 'success',
-  };
+  if (mode === 'agent') {
+    // ── Video Agent mode ───────────────────────────────────────────────────
+    // Build a rich prompt from the pipeline config so the agent has context.
+    const agentPrompt =
+      ctx.heygen_agent_prompt ||
+      buildAgentPromptFromContext(ctx);
+
+    const avatarId    = ctx.heygen_avatar_id  || '';
+    const orientation = ctx.heygen_orientation || 'portrait';
+
+    const result = await submitHeyGenAgent(
+      { apiKey, prompt: agentPrompt, avatarId, voiceId, orientation },
+      httpPost
+    );
+    sessionId = result.sessionId;
+    videoId   = result.videoId;
+
+    // Poll both session and video until done
+    const videoUrl = await pollHeyGenAgentStatus(sessionId, videoId, apiKey, 90, httpGet);
+
+    const { r2_object_key, video_file_size_bytes } = await uploadToR2(
+      videoUrl, r2Config,
+      { user_id: ctx.user_id, pipeline_id: ctx.pipeline_id, execution_id: ctx.execution_id },
+      httpGet, r2Put
+    );
+
+    return {
+      heygen_video_id: sessionId, // use session_id as the tracking ID for agent mode
+      r2_object_key,
+      video_file_size_bytes,
+      video_gen_status: 'success',
+    };
+
+  } else {
+    // ── Classic mode ────────────────────────────────────────────────────────
+    const avatarId    = ctx.heygen_avatar_id  || '';
+    const videoLanguage = ctx.video_language  || 'English';
+    const scriptText  = ctx.script_text       || '';
+
+    videoId = await submitHeyGenVideo(
+      { apiKey, avatarId, voiceId, videoLanguage, scriptText, engine, resolution, aspectRatio, motionPrompt },
+      httpPost
+    );
+
+    const videoUrl = await pollHeyGenStatus(videoId, apiKey, 60, httpGet);
+
+    const { r2_object_key, video_file_size_bytes } = await uploadToR2(
+      videoUrl, r2Config,
+      { user_id: ctx.user_id, pipeline_id: ctx.pipeline_id, execution_id: ctx.execution_id },
+      httpGet, r2Put
+    );
+
+    return {
+      heygen_video_id: videoId,
+      r2_object_key,
+      video_file_size_bytes,
+      video_gen_status: 'success',
+    };
+  }
+}
+
+/**
+ * Build a Video Agent prompt from pipeline context fields.
+ * Used when no explicit heygen_agent_prompt is set.
+ *
+ * @param {object} ctx
+ * @returns {string}
+ */
+function buildAgentPromptFromContext(ctx) {
+  const topic    = ctx.niche_keyword   || 'general interest';
+  const title    = ctx.article_title   || '';
+  const summary  = ctx.article_summary || '';
+  const tone     = ctx.script_tone     || 'professional';
+  const duration = ctx.target_duration_secs || 60;
+  const lang     = ctx.video_language  || 'English';
+
+  const lines = [
+    `Create a ${duration}-second ${tone} video in ${lang} about: ${topic}.`,
+  ];
+  if (title)   lines.push(`Topic: ${title}.`);
+  if (summary) lines.push(`Key points to cover: ${summary.slice(0, 500)}.`);
+  lines.push('Style: portrait orientation (9:16), suitable for social media. No text overlays needed.');
+
+  return lines.join(' ');
 }
 
 // ---------------------------------------------------------------------------
@@ -439,15 +576,20 @@ async function runVideoGenerator(ctx, httpPost, httpGet, r2Put) {
 // ---------------------------------------------------------------------------
 
 export {
-  // Utility helpers (standalone, testable)
-  buildHeyGenPayload,
+  // Helpers
+  buildHeyGenPayload,          // legacy alias
+  buildHeyGenV3Payload,
+  buildHeyGenAgentPayload,
+  buildAgentPromptFromContext,
   extractVideoStatus,
   buildR2ObjectKey,
   parseHeyGenError,
   shouldRetryPoll,
-  // Core pipeline functions
+  // Core functions
   submitHeyGenVideo,
+  submitHeyGenAgent,
   pollHeyGenStatus,
+  pollHeyGenAgentStatus,
   uploadToR2,
   runVideoGenerator,
 };
