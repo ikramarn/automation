@@ -124,9 +124,17 @@ const TIMEZONE_OPTIONS = [...new Set(COMMON_TIMEZONES)].sort();
 // ---------------------------------------------------------------------------
 
 async function fetchCredentials(url: string): Promise<ConnectedPlatform[]> {
+  const supabase = (await import("@/lib/supabase/client")).createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+
   const res = await fetch(url, {
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(session?.access_token
+        ? { Authorization: `Bearer ${session.access_token}` }
+        : {}),
+    },
   });
 
   if (!res.ok) return [];
@@ -135,13 +143,14 @@ async function fetchCredentials(url: string): Promise<ConnectedPlatform[]> {
     await res.json().catch(() => []);
 
   // Map credential list to connected platforms
+  // Credential types: youtube_access_token, tiktok_access_token, etc.
   const platforms: Platform[] = ["youtube", "tiktok", "facebook", "instagram"];
   return platforms.map((p) => {
-    const entry = data.find((c) => c.credential_type === `social_${p}`);
+    const entry = data.find((c) => c.credential_type === `${p}_access_token`);
     return {
       platform: p,
       display_name: PLATFORM_DISPLAY[p],
-      connected: entry?.status === "connected",
+      connected: !!entry && entry.status === "active",
     };
   });
 }
@@ -892,12 +901,18 @@ export default function NewPipelinePage() {
         platforms: form.selected_platforms,
       };
 
+      const supabase = (await import("@/lib/supabase/client")).createClient();
+      const { data: { session } } = await supabase.auth.getSession();
+
       const res = await fetch(`${API_BASE}/pipelines`, {
         method: "POST",
         credentials: "include",
         headers: {
           "Content-Type": "application/json",
           ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+          ...(session?.access_token
+            ? { Authorization: `Bearer ${session.access_token}` }
+            : {}),
         },
         body: JSON.stringify(payload),
       });
