@@ -11,9 +11,6 @@
 # Required files (copied by Jenkins before this script runs):
 #   /tmp/api.env     — all env vars for the api container
 #   /tmp/nextjs.env  — all env vars for the nextjs container
-#
-# Usage (Jenkins copies env files then runs):
-#   IMAGE_TAG=a1b2c3d4 REGISTRY=ikcloudky6/automation bash vps-deploy.sh
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -23,7 +20,7 @@ IMAGE_TAG="${IMAGE_TAG:-latest}"
 API_IMAGE="${REGISTRY}:api-${IMAGE_TAG}"
 DASHBOARD_IMAGE="${REGISTRY}:dashboard-${IMAGE_TAG}"
 
-# Validate env files exist — fail loudly rather than starting with no config
+# ── Validate env files ────────────────────────────────────────────────────────
 if [ ! -s /tmp/api.env ]; then
     echo "ERROR: /tmp/api.env is missing or empty — aborting deploy"
     exit 1
@@ -34,6 +31,7 @@ if [ ! -s /tmp/nextjs.env ]; then
     exit 1
 fi
 
+# ── Pull images ───────────────────────────────────────────────────────────────
 echo "==> Pulling images: ${API_IMAGE} and ${DASHBOARD_IMAGE}"
 docker pull "${API_IMAGE}"
 docker pull "${DASHBOARD_IMAGE}"
@@ -44,21 +42,13 @@ echo "==> Recreating api container..."
 docker stop api 2>/dev/null || true
 docker rm   api 2>/dev/null || true
 
-# Build -e flags from the env file (skip blank lines and comments)
-API_ENV_FLAGS=""
-while IFS= read -r line || [ -n "$line" ]; do
-    # Skip empty lines and comment lines
-    [[ -z "$line" || "$line" =~ ^# ]] && continue
-    API_ENV_FLAGS="${API_ENV_FLAGS} -e $(printf '%q' "$line")"
-done < /tmp/api.env
-
-eval docker run -d \
+docker run -d \
     --name api \
     --network autoflow_internal \
     --network autoflow_public \
     --restart always \
-    ${API_ENV_FLAGS} \
-    --health-cmd "wget -qO- http://127.0.0.1:3001/health" \
+    --env-file /tmp/api.env \
+    --health-cmd "wget -q --spider http://127.0.0.1:3001/health || exit 1" \
     --health-interval=30s \
     --health-timeout=5s \
     --health-retries=3 \
@@ -73,19 +63,13 @@ echo "==> Recreating nextjs container..."
 docker stop nextjs 2>/dev/null || true
 docker rm   nextjs 2>/dev/null || true
 
-NEXTJS_ENV_FLAGS=""
-while IFS= read -r line || [ -n "$line" ]; do
-    [[ -z "$line" || "$line" =~ ^# ]] && continue
-    NEXTJS_ENV_FLAGS="${NEXTJS_ENV_FLAGS} -e $(printf '%q' "$line")"
-done < /tmp/nextjs.env
-
-eval docker run -d \
+docker run -d \
     --name nextjs \
     --network autoflow_internal \
     --network autoflow_public \
     --restart always \
-    ${NEXTJS_ENV_FLAGS} \
-    --health-cmd "wget -qO- http://127.0.0.1:3000/api/health" \
+    --env-file /tmp/nextjs.env \
+    --health-cmd "wget -q --spider http://127.0.0.1:3000 || exit 1" \
     --health-interval=30s \
     --health-timeout=5s \
     --health-retries=3 \
@@ -96,7 +80,6 @@ echo "==> nextjs container started"
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 docker image prune -f
-# Remove env files from VPS — do not leave secrets on disk
 rm -f /tmp/api.env /tmp/nextjs.env
 
 echo "==> Deploy complete: ${IMAGE_TAG}"
