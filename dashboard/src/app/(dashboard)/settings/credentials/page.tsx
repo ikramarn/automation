@@ -129,6 +129,9 @@ function ApiKeyForm({ label, credentialType, credential, onSaved }: ApiKeyFormPr
     setSaving(true);
 
     try {
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
+
       const csrfToken = await fetchCsrfToken();
 
       const res = await fetch(`${API_BASE}/credentials/${credentialType}`, {
@@ -137,6 +140,9 @@ function ApiKeyForm({ label, credentialType, credential, onSaved }: ApiKeyFormPr
         headers: {
           "Content-Type": "application/json",
           "X-CSRF-Token": csrfToken,
+          ...(session?.access_token
+            ? { Authorization: `Bearer ${session.access_token}` }
+            : {}),
         },
         body: JSON.stringify({ value: value.trim() }),
       });
@@ -282,11 +288,18 @@ function GoogleDriveSection({ credentials, onDisconnected }: GoogleDriveSectionP
     setError(null);
     setDisconnecting(true);
     try {
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
       const csrfToken = await fetchCsrfToken();
       const res = await fetch(`${API_BASE}/credentials/google`, {
         method: "DELETE",
         credentials: "include",
-        headers: { "X-CSRF-Token": csrfToken },
+        headers: {
+          "X-CSRF-Token": csrfToken,
+          ...(session?.access_token
+            ? { Authorization: `Bearer ${session.access_token}` }
+            : {}),
+        },
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -378,11 +391,18 @@ function SocialPlatformRow({ platform, label, credentials, onDisconnected }: Soc
     setError(null);
     setDisconnecting(true);
     try {
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
       const csrfToken = await fetchCsrfToken();
       const res = await fetch(`${API_BASE}/credentials/social/${platform}`, {
         method: "DELETE",
         credentials: "include",
-        headers: { "X-CSRF-Token": csrfToken },
+        headers: {
+          "X-CSRF-Token": csrfToken,
+          ...(session?.access_token
+            ? { Authorization: `Bearer ${session.access_token}` }
+            : {}),
+        },
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
