@@ -38,6 +38,9 @@ interface FormState {
   // Step 1 — Basic info
   name: string;
   niche_keyword: string;
+  heygen_avatar_id: string;
+  script_tone: string;
+  video_language: string;
   // Step 2 — Schedule
   recurrence: Recurrence;
   time: string; // HH:MM
@@ -382,6 +385,63 @@ function Step1BasicInfo({
           1–200 characters. Used to find relevant articles for your videos.
         </p>
         <FieldError message={errors.niche_keyword} />
+      </div>
+
+      {/* HeyGen Avatar ID */}
+      <div className="mb-5">
+        <label htmlFor="heygen-avatar-id" className="mb-1 block text-sm font-medium text-gray-700">
+          HeyGen Avatar ID
+          <span className="ml-1 text-xs font-normal text-gray-400">(optional)</span>
+        </label>
+        <input
+          id="heygen-avatar-id"
+          type="text"
+          value={form.heygen_avatar_id}
+          onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("heygen_avatar_id", e.target.value)}
+          placeholder="e.g. avatar_abc123"
+          className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+        />
+        <p className="mt-1 text-xs text-gray-400">
+          Found in your HeyGen dashboard under Avatars. Leave blank to use the default.
+        </p>
+      </div>
+
+      {/* Video language */}
+      <div className="mb-5">
+        <label htmlFor="video-language" className="mb-1 block text-sm font-medium text-gray-700">
+          Video language
+        </label>
+        <select
+          id="video-language"
+          value={form.video_language}
+          onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange("video_language", e.target.value)}
+          className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+        >
+          {["English", "Spanish", "French", "German", "Portuguese", "Arabic", "Hindi", "Japanese", "Korean", "Chinese"].map((lang) => (
+            <option key={lang} value={lang}>{lang}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Script tone */}
+      <div className="mb-5">
+        <label htmlFor="script-tone" className="mb-1 block text-sm font-medium text-gray-700">
+          Script tone
+          <span className="ml-1 text-xs font-normal text-gray-400">(optional)</span>
+        </label>
+        <select
+          id="script-tone"
+          value={form.script_tone}
+          onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange("script_tone", e.target.value)}
+          className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+        >
+          <option value="">Default</option>
+          <option value="professional">Professional</option>
+          <option value="casual">Casual</option>
+          <option value="educational">Educational</option>
+          <option value="entertaining">Entertaining</option>
+          <option value="inspirational">Inspirational</option>
+        </select>
       </div>
     </fieldset>
   );
@@ -814,6 +874,9 @@ export default function NewPipelinePage() {
   const [form, setForm] = useState<FormState>({
     name: "",
     niche_keyword: "",
+    heygen_avatar_id: "",
+    script_tone: "",
+    video_language: "English",
     recurrence: "daily",
     time: "09:00",
     timezone: TIMEZONE_OPTIONS.includes(localTz) ? localTz : "UTC",
@@ -890,15 +953,22 @@ export default function NewPipelinePage() {
       const payload = {
         name: form.name.trim(),
         niche_keyword: form.niche_keyword.trim(),
-        schedule: {
-          recurrence: form.recurrence,
-          time: form.time,
-          timezone: form.timezone,
-          ...(form.recurrence === "custom"
-            ? { days_of_week: form.custom_days }
-            : {}),
-        },
-        platforms: form.selected_platforms,
+        publishing_platforms: form.selected_platforms,
+        schedule_recurrence: form.recurrence,
+        schedule_time_hhmm: form.time,
+        schedule_timezone: form.timezone,
+        ...(form.recurrence === "custom"
+          ? { schedule_days_of_week: form.custom_days }
+          : {}),
+        ...(form.heygen_avatar_id?.trim()
+          ? { heygen_avatar_id: form.heygen_avatar_id.trim() }
+          : {}),
+        ...(form.script_tone?.trim()
+          ? { script_tone: form.script_tone.trim() }
+          : {}),
+        ...(form.video_language?.trim()
+          ? { video_language: form.video_language.trim() }
+          : {}),
       };
 
       const supabase = (await import("@/lib/supabase/client")).createClient();
