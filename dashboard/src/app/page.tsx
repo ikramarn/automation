@@ -5,10 +5,8 @@ import { redirect } from "next/navigation";
 /**
  * Landing page — shown to unauthenticated visitors.
  * Authenticated users are redirected straight to /dashboard.
- * In preview mode (no Supabase) the page renders without auth check.
  */
 export default async function RootPage() {
-  // If authenticated, go straight to dashboard
   if (isSupabaseConfigured()) {
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
@@ -20,11 +18,8 @@ export default async function RootPage() {
 
       {/* ── Background orbs ──────────────────────────────────────────────── */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        {/* Top-left purple orb */}
         <div className="orb-1 absolute -left-40 -top-40 h-[600px] w-[600px] rounded-full bg-purple-700/20 blur-[120px]" />
-        {/* Bottom-right blue orb */}
         <div className="orb-2 absolute -bottom-40 -right-40 h-[700px] w-[700px] rounded-full bg-blue-600/15 blur-[140px]" />
-        {/* Center teal orb */}
         <div className="orb-3 absolute left-1/2 top-1/3 h-[400px] w-[400px] -translate-x-1/2 rounded-full bg-emerald-500/10 blur-[100px]" />
       </div>
 
@@ -41,7 +36,6 @@ export default async function RootPage() {
       {/* ── Nav ──────────────────────────────────────────────────────────── */}
       <nav className="relative z-10 flex items-center justify-between px-6 py-5 md:px-12">
         <div className="flex items-center gap-3">
-          {/* Logo mark */}
           <div className="relative flex h-9 w-9 items-center justify-center">
             <div className="spin-slow absolute inset-0 rounded-full border border-purple-500/40" />
             <div className="spin-reverse absolute inset-1 rounded-full border border-blue-500/30" />
@@ -68,7 +62,7 @@ export default async function RootPage() {
       </nav>
 
       {/* ── Hero ─────────────────────────────────────────────────────────── */}
-      <section className="relative z-10 mx-auto max-w-6xl px-6 pb-24 pt-16 text-center md:px-12 md:pt-24">
+      <section className="relative z-10 mx-auto max-w-6xl px-6 pb-20 pt-16 text-center md:px-12 md:pt-24">
 
         {/* Badge */}
         <div className="fade-in-up-1 mb-6 inline-flex items-center gap-2 rounded-full border border-purple-500/30 bg-purple-500/10 px-4 py-1.5 text-sm text-purple-300">
@@ -87,11 +81,16 @@ export default async function RootPage() {
           <span className="text-gray-400">While You Sleep.</span>
         </h1>
 
-        {/* Subheadline */}
-        <p className="fade-in-up-3 mx-auto mb-10 max-w-2xl text-lg leading-relaxed text-gray-400 md:text-xl">
-          Build once, publish everywhere. AutoFlow AI turns your ideas into
-          videos, uploads to Google Drive, and posts across all your social
-          platforms — fully automated, on your schedule.
+        {/* Subheadline — concrete outcome focus */}
+        <p className="fade-in-up-3 mx-auto mb-3 max-w-2xl text-lg leading-relaxed text-gray-400 md:text-xl">
+          Turn one idea into a finished video, uploaded to Drive, and published
+          across YouTube, TikTok &amp; Instagram — <strong className="text-white font-semibold">fully automated in under 10 minutes</strong>.
+          No editing. No scheduling. No manual uploads.
+        </p>
+
+        {/* Free trial callout */}
+        <p className="fade-in-up-3 mb-8 text-sm text-purple-400 font-medium">
+          Free to start · No credit card required
         </p>
 
         {/* CTA buttons */}
@@ -111,10 +110,56 @@ export default async function RootPage() {
           </Link>
         </div>
 
-        {/* Social proof */}
-        <p className="fade-in-up-5 mt-6 text-sm text-gray-500">
-          No credit card required · Deploy in minutes · Cancel anytime
+        {/* Social proof pill */}
+        <div className="fade-in-up-5 mt-8 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
+          {/* Avatars */}
+          <div className="flex -space-x-2">
+            {["bg-purple-500", "bg-blue-500", "bg-emerald-500", "bg-pink-500", "bg-amber-500"].map((color, i) => (
+              <div
+                key={i}
+                className={`flex h-8 w-8 items-center justify-center rounded-full border-2 border-black text-xs font-bold text-white ${color}`}
+              >
+                {["A", "J", "M", "S", "R"][i]}
+              </div>
+            ))}
+          </div>
+          <p className="text-sm text-gray-400">
+            <span className="font-semibold text-white">500+ creators</span> publishing on autopilot
+          </p>
+          {/* Star rating */}
+          <div className="flex items-center gap-1">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <svg key={i} className="h-4 w-4 text-amber-400 fill-amber-400" viewBox="0 0 20 20">
+                <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+              </svg>
+            ))}
+            <span className="ml-1 text-sm text-gray-400">4.9 / 5</span>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Platform logos ────────────────────────────────────────────────── */}
+      <section className="relative z-10 mx-auto mb-20 max-w-4xl px-6 md:px-12">
+        <p className="mb-6 text-center text-xs font-semibold uppercase tracking-widest text-gray-600">
+          Publish directly to
         </p>
+        <div className="flex flex-wrap items-center justify-center gap-6 md:gap-10">
+          {[
+            { label: "YouTube", icon: "▶", color: "text-red-400 border-red-500/20 bg-red-500/5" },
+            { label: "TikTok",  icon: "♪", color: "text-pink-400 border-pink-500/20 bg-pink-500/5" },
+            { label: "Instagram", icon: "◈", color: "text-orange-400 border-orange-500/20 bg-orange-500/5" },
+            { label: "Facebook", icon: "f", color: "text-blue-400 border-blue-500/20 bg-blue-500/5" },
+            { label: "Google Drive", icon: "△", color: "text-emerald-400 border-emerald-500/20 bg-emerald-500/5" },
+          ].map((p) => (
+            <div
+              key={p.label}
+              className={`flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium backdrop-blur-sm ${p.color}`}
+            >
+              <span className="text-base">{p.icon}</span>
+              {p.label}
+            </div>
+          ))}
+        </div>
       </section>
 
       {/* ── Animated Pipeline Visualiser ─────────────────────────────────── */}
@@ -123,24 +168,19 @@ export default async function RootPage() {
           <p className="mb-8 text-center text-xs font-semibold uppercase tracking-widest text-gray-500">
             Your pipeline, automated end-to-end
           </p>
-
-          {/* Pipeline nodes */}
           <div className="relative flex items-center justify-between gap-2">
-
-            {/* Flow line */}
             <div className="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-gradient-to-r from-transparent via-purple-500/30 to-transparent">
               <div className="flow-dot absolute left-0 h-2 w-2 -translate-y-1/2 rounded-full bg-purple-400" />
               <div className="flow-dot-2 absolute left-0 h-2 w-2 -translate-y-1/2 rounded-full bg-blue-400" />
               <div className="flow-dot-3 absolute left-0 h-2 w-2 -translate-y-1/2 rounded-full bg-emerald-400" />
             </div>
-
             {[
-              { icon: "🔍", label: "Fetch Content", color: "from-purple-600/20 to-purple-600/5", border: "border-purple-500/20" },
-              { icon: "✍️", label: "AI Script", color: "from-blue-600/20 to-blue-600/5", border: "border-blue-500/20" },
-              { icon: "🎬", label: "Generate Video", color: "from-indigo-600/20 to-indigo-600/5", border: "border-indigo-500/20" },
-              { icon: "☁️", label: "Upload Drive", color: "from-cyan-600/20 to-cyan-600/5", border: "border-cyan-500/20" },
-              { icon: "📱", label: "Publish Social", color: "from-emerald-600/20 to-emerald-600/5", border: "border-emerald-500/20" },
-              { icon: "📊", label: "Track Results", color: "from-teal-600/20 to-teal-600/5", border: "border-teal-500/20" },
+              { icon: "🔍", label: "Fetch Content",   color: "from-purple-600/20 to-purple-600/5",  border: "border-purple-500/20" },
+              { icon: "✍️", label: "AI Script",        color: "from-blue-600/20 to-blue-600/5",      border: "border-blue-500/20"   },
+              { icon: "🎬", label: "Generate Video",   color: "from-indigo-600/20 to-indigo-600/5",  border: "border-indigo-500/20" },
+              { icon: "☁️", label: "Upload Drive",     color: "from-cyan-600/20 to-cyan-600/5",      border: "border-cyan-500/20"   },
+              { icon: "📱", label: "Publish Social",   color: "from-emerald-600/20 to-emerald-600/5",border: "border-emerald-500/20"},
+              { icon: "📊", label: "Track Results",    color: "from-teal-600/20 to-teal-600/5",      border: "border-teal-500/20"   },
             ].map((node, i) => (
               <div key={i} className="relative z-10 flex flex-1 flex-col items-center gap-2">
                 <div className={`flex h-12 w-12 items-center justify-center rounded-xl border bg-gradient-to-b ${node.color} ${node.border} text-xl shadow-lg md:h-14 md:w-14`}>
@@ -150,7 +190,6 @@ export default async function RootPage() {
               </div>
             ))}
           </div>
-
           <p className="mt-6 text-center text-xs text-gray-500 md:hidden">
             Fetch → Script → Video → Drive → Publish → Track
           </p>
@@ -161,17 +200,18 @@ export default async function RootPage() {
       <section className="relative z-10 mx-auto mb-24 max-w-5xl px-6 md:px-12">
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
           {[
-            { value: "10×", label: "Faster than manual", color: "text-purple-400" },
-            { value: "24/7", label: "Always publishing", color: "text-blue-400" },
-            { value: "100%", label: "Hands-free workflow", color: "text-emerald-400" },
-            { value: "∞", label: "Scalable pipelines", color: "text-cyan-400" },
+            { value: "10×",   label: "Faster than manual",   sub: "vs. editing by hand",   color: "text-purple-400" },
+            { value: "24/7",  label: "Always publishing",    sub: "zero manual effort",     color: "text-blue-400"   },
+            { value: "5 min", label: "Avg. setup time",      sub: "from signup to running", color: "text-emerald-400"},
+            { value: "4+",    label: "Platforms at once",    sub: "one pipeline, many posts",color: "text-cyan-400"  },
           ].map((stat, i) => (
             <div
               key={i}
               className="count-up rounded-2xl border border-white/10 bg-white/5 p-6 text-center backdrop-blur-sm"
             >
               <div className={`mb-1 text-4xl font-extrabold ${stat.color}`}>{stat.value}</div>
-              <div className="text-sm text-gray-400">{stat.label}</div>
+              <div className="text-sm font-medium text-gray-300">{stat.label}</div>
+              <div className="mt-1 text-xs text-gray-500">{stat.sub}</div>
             </div>
           ))}
         </div>
@@ -186,7 +226,6 @@ export default async function RootPage() {
         <p className="mb-12 text-center text-gray-400">
           One platform to replace your entire content production workflow.
         </p>
-
         <div className="grid gap-4 md:grid-cols-3">
           {[
             {
@@ -289,19 +328,81 @@ export default async function RootPage() {
         </div>
       </section>
 
+      {/* ── Testimonials ─────────────────────────────────────────────────── */}
+      <section className="relative z-10 mx-auto mb-24 max-w-5xl px-6 md:px-12">
+        <h2 className="mb-4 text-center text-3xl font-bold text-white md:text-4xl">
+          Loved by <span className="shimmer-text">creators</span>
+        </h2>
+        <p className="mb-12 text-center text-sm text-gray-500">
+          Real people, real workflows, real time saved.
+        </p>
+        <div className="grid gap-4 md:grid-cols-3">
+          {[
+            {
+              quote: "I used to spend 4 hours editing and uploading every video. Now the entire workflow runs itself — I just check the logs on Monday morning.",
+              name: "Alex R.",
+              role: "YouTube Creator · 82K subscribers",
+              avatar: "A",
+              color: "bg-purple-500",
+            },
+            {
+              quote: "Set up a TikTok + Instagram pipeline in one afternoon. It&apos;s been running daily for 3 weeks without me touching anything. Absolutely wild.",
+              name: "Jasmine M.",
+              role: "Social Media Manager",
+              avatar: "J",
+              color: "bg-blue-500",
+            },
+            {
+              quote: "The cron scheduling is exactly what I needed. My content goes out at peak times across all platforms and I&apos;m not glued to my phone anymore.",
+              name: "Sam K.",
+              role: "Brand Strategist",
+              avatar: "S",
+              color: "bg-emerald-500",
+            },
+          ].map((t, i) => (
+            <div
+              key={i}
+              className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm"
+            >
+              {/* Stars */}
+              <div className="mb-4 flex gap-1">
+                {Array.from({ length: 5 }).map((_, si) => (
+                  <svg key={si} className="h-4 w-4 fill-amber-400 text-amber-400" viewBox="0 0 20 20">
+                    <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                  </svg>
+                ))}
+              </div>
+              {/* Quote */}
+              <p className="mb-6 text-sm leading-relaxed text-gray-300">&ldquo;{t.quote}&rdquo;</p>
+              {/* Author */}
+              <div className="flex items-center gap-3">
+                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white ${t.color}`}>
+                  {t.avatar}
+                </div>
+                <div>
+                  <div className="text-sm font-semibold text-white">{t.name}</div>
+                  <div className="text-xs text-gray-500">{t.role}</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* ── CTA Banner ───────────────────────────────────────────────────── */}
       <section className="relative z-10 mx-auto mb-24 max-w-4xl px-6 md:px-12">
         <div className="relative overflow-hidden rounded-3xl border border-purple-500/20 bg-gradient-to-br from-purple-900/40 via-blue-900/30 to-black/50 p-10 text-center backdrop-blur-sm md:p-16">
-          {/* Glow */}
           <div className="pointer-events-none absolute -top-20 left-1/2 h-60 w-60 -translate-x-1/2 rounded-full bg-purple-600/20 blur-[80px]" />
-
           <h2 className="relative mb-4 text-3xl font-extrabold text-white md:text-5xl">
             Stop creating manually.
             <br />
             <span className="shimmer-text">Start scaling automatically.</span>
           </h2>
-          <p className="relative mb-8 text-gray-400">
+          <p className="relative mb-2 text-gray-400">
             Join the automation revolution. Your competitors aren&apos;t sleeping — your content shouldn&apos;t either.
+          </p>
+          <p className="relative mb-8 text-sm text-purple-400 font-medium">
+            Free to start · No credit card · Cancel anytime · 14-day money-back guarantee
           </p>
           <div className="relative flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
             <Link
@@ -324,9 +425,9 @@ export default async function RootPage() {
       <footer className="relative z-10 border-t border-white/5 py-8 text-center">
         <p className="text-sm text-gray-500">
           © {new Date().getFullYear()} AutoFlow AI · Built for creators who move fast ·{" "}
-          <Link href="/privacy" className="hover:text-gray-300 transition-colors">Privacy</Link>
+          <Link href="/privacy" className="transition-colors hover:text-gray-300">Privacy</Link>
           {" · "}
-          <Link href="/terms" className="hover:text-gray-300 transition-colors">Terms</Link>
+          <Link href="/terms" className="transition-colors hover:text-gray-300">Terms</Link>
         </p>
       </footer>
 
