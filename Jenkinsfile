@@ -29,6 +29,10 @@ pipeline {
     environment {
         REGISTRY         = 'ikcloudky6/automation'
         IMAGE_TAG        = "${env.GIT_COMMIT?.take(8) ?: 'latest'}"
+        // GIT_BRANCH is set by Jenkins SCM checkout (e.g. "origin/master").
+        // BRANCH_NAME is only set in Multibranch pipelines.
+        // IS_DEPLOY_BRANCH covers both a regular Pipeline and Multibranch.
+        IS_DEPLOY_BRANCH = "${(env.BRANCH_NAME ?: env.GIT_BRANCH ?: '').replaceAll('origin/', '') in ['master', 'main']}"
     }
 
     options {
@@ -44,7 +48,9 @@ pipeline {
         stage('Checkout') {
             steps {
                 checkout scm
-                echo "Building commit ${IMAGE_TAG} on branch ${env.BRANCH_NAME}"
+                sh "git rev-parse --abbrev-ref HEAD || true"
+                echo "GIT_BRANCH=${env.GIT_BRANCH} | BRANCH_NAME=${env.BRANCH_NAME} | IS_DEPLOY_BRANCH=${env.IS_DEPLOY_BRANCH}"
+                echo "Building commit ${IMAGE_TAG}"
             }
         }
 
@@ -119,11 +125,7 @@ pipeline {
         // ── 4. Build Images ────────────────────────────────────────────────
         stage('Build Images') {
             when {
-                anyOf {
-                    branch 'master'
-                    branch 'main'
-                    branch pattern: 'release/.*', comparator: 'REGEXP'
-                }
+                environment name: 'IS_DEPLOY_BRANCH', value: 'true'
             }
             parallel {
 
@@ -169,11 +171,7 @@ pipeline {
         // ── 4. Push Images ─────────────────────────────────────────────────
         stage('Push Images') {
             when {
-                anyOf {
-                    branch 'master'
-                    branch 'main'
-                    branch pattern: 'release/.*', comparator: 'REGEXP'
-                }
+                environment name: 'IS_DEPLOY_BRANCH', value: 'true'
             }
             steps {
                 withCredentials([usernamePassword(
@@ -201,7 +199,7 @@ pipeline {
         // ── 6. Prod VPS Deploy (master/main → VPS via SSH) ────────────────
         stage('Prod Deploy (VPS)') {
             when {
-                anyOf { branch 'master'; branch 'main' }
+                environment name: 'IS_DEPLOY_BRANCH', value: 'true'
             }
             steps {
                 withCredentials([
@@ -228,10 +226,7 @@ pipeline {
         // ── 7. Smoke Test ──────────────────────────────────────────────────
         stage('Smoke Test') {
             when {
-                anyOf {
-                    branch 'master'
-                    branch 'main'
-                }
+                environment name: 'IS_DEPLOY_BRANCH', value: 'true'
             }
             steps {
                 withCredentials([string(credentialsId: 'VPS_HOST', variable: 'VPS_HOST')]) {
