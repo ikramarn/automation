@@ -127,41 +127,57 @@ pipeline {
             when {
                 environment name: 'IS_DEPLOY_BRANCH', value: 'true'
             }
-            parallel {
 
-                stage('Build API Image') {
+            stages {
+
+                // Free disk space before building — removes ALL dangling/unused
+                // layers and stopped containers. No time filter so it actually works.
+                stage('Pre-build Cleanup') {
                     steps {
-                        sh """
-                            docker build \\
-                              --target production \\
-                              --tag ${REGISTRY}:api-${IMAGE_TAG} \\
-                              --tag ${REGISTRY}:api-latest \\
-                              --cache-from ${REGISTRY}:api-latest \\
-                              ./api
-                        """
+                        sh '''
+                            echo "=== Disk before cleanup ==="
+                            df -h /
+                            docker system prune -f --volumes || true
+                            docker image prune -a -f --filter "until=24h" || true
+                            echo "=== Disk after cleanup ==="
+                            df -h /
+                        '''
                     }
                 }
 
-                stage('Build Dashboard Image') {
-                    steps {
-                        withCredentials([file(credentialsId: 'DASHBOARD_BUILD_ENV', variable: 'DASHBOARD_ENV_FILE')]) {
-                            sh """
-                                export NVM_DIR="\$HOME/.nvm"
-                                . "\$NVM_DIR/nvm.sh"
-                                nvm use 20
-                                # Source the env file to get build args
-                                set -a && . \${DASHBOARD_ENV_FILE} && set +a
-                                docker build \\
-                                  --target production \\
-                                  --build-arg NEXT_PUBLIC_SUPABASE_URL=\${NEXT_PUBLIC_SUPABASE_URL} \\
-                                  --build-arg NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=\${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY} \\
-                                  --build-arg NEXT_PUBLIC_API_BASE_URL=\${NEXT_PUBLIC_API_BASE_URL} \\
-                                  --tag ${REGISTRY}:dashboard-${IMAGE_TAG} \\
-                                  --tag ${REGISTRY}:dashboard-latest \\
-                                  --cache-from ${REGISTRY}:dashboard-latest \\
-                                  ./dashboard
-                            """
+                stage('Build API + Dashboard') {
+                    parallel {
+
+                        stage('Build API Image') {
+                            steps {
+                                sh """
+                                    docker build \\
+                                      --target production \\
+                                      --tag ${REGISTRY}:api-${IMAGE_TAG} \\
+                                      --tag ${REGISTRY}:api-latest \\
+                                      ./api
+                                """
+                            }
                         }
+
+                        stage('Build Dashboard Image') {
+                            steps {
+                                withCredentials([file(credentialsId: 'DASHBOARD_BUILD_ENV', variable: 'DASHBOARD_ENV_FILE')]) {
+                                    sh """
+                                        set -a && . \${DASHBOARD_ENV_FILE} && set +a
+                                        docker build \\
+                                          --target production \\
+                                          --build-arg NEXT_PUBLIC_SUPABASE_URL=\${NEXT_PUBLIC_SUPABASE_URL} \\
+                                          --build-arg NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=\${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY} \\
+                                          --build-arg NEXT_PUBLIC_API_BASE_URL=\${NEXT_PUBLIC_API_BASE_URL} \\
+                                          --tag ${REGISTRY}:dashboard-${IMAGE_TAG} \\
+                                          --tag ${REGISTRY}:dashboard-latest \\
+                                          ./dashboard
+                                    """
+                                }
+                            }
+                        }
+
                     }
                 }
 
@@ -250,7 +266,10 @@ pipeline {
             echo "❌ Pipeline failed — check logs above"
         }
         cleanup {
-            sh "docker system prune -f --filter 'until=24h' || true"
+            // Always prune dangling images and stopped containers after the build.
+            // Don't use --filter until=24h — it skips everything just built.
+            sh "docker container prune -f || true"
+            sh "docker image prune -f || true"
         }
     }
 }
