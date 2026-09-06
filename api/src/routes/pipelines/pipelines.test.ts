@@ -349,7 +349,7 @@ describe('POST /pipelines', () => {
     expect(response.statusCode).toBe(400);
     const body = response.json<{ message: string }>();
     expect(body.message).toBe(
-      'HeyGen API key required. Add your key in Settings > Credentials.',
+      'HeyGen API key required. Add your key in Settings → Credentials before creating a pipeline.',
     );
   });
 
