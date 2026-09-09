@@ -47,7 +47,7 @@ services:
       - api
       - nextjs
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -74,7 +74,7 @@ services:
       - public                      # Reachable by Nginx
       - internal                    # Reachable by n8n for /internal/* callbacks
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -98,7 +98,7 @@ services:
     networks:
       - public                      # Reachable by Nginx only
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -140,7 +140,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:5678/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5678/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
