@@ -99,20 +99,32 @@ export async function deletePipelineRoute(app: FastifyInstance): Promise<void> {
         throw AppError.internal('Failed to delete pipeline');
       }
 
-      // Best-effort: cancel n8n workflow (non-blocking, fire-and-forget)
+      // Best-effort: deactivate then delete n8n workflow (non-blocking, fire-and-forget)
       const workflowId = p['n8n_workflow_id'] as string | null;
-      if (workflowId && process.env['N8N_API_URL']) {
+      if (workflowId && process.env['N8N_API_URL'] && !workflowId.startsWith('n8n-placeholder-')) {
         const n8nApiUrl = process.env['N8N_API_URL'];
         const n8nApiKey = process.env['N8N_API_KEY'] ?? '';
+
+        // Deactivate first, then delete — n8n requires deactivation before deletion
         fetch(
-          `${n8nApiUrl}/workflows/${encodeURIComponent(workflowId)}`,
+          `${n8nApiUrl}/workflows/${encodeURIComponent(workflowId)}/deactivate`,
           {
-            method: 'DELETE',
+            method: 'POST',
             headers: { 'X-N8N-API-KEY': n8nApiKey },
           },
-        ).catch((err: unknown) => {
-          request.log.warn({ pipelineId: id, workflowId, err }, 'Failed to delete n8n workflow (best-effort)');
-        });
+        )
+          .then(() =>
+            fetch(
+              `${n8nApiUrl}/workflows/${encodeURIComponent(workflowId)}`,
+              {
+                method: 'DELETE',
+                headers: { 'X-N8N-API-KEY': n8nApiKey },
+              },
+            ),
+          )
+          .catch((err: unknown) => {
+            request.log.warn({ pipelineId: id, workflowId, err }, 'Failed to delete n8n workflow (best-effort)');
+          });
       }
 
       return reply.status(200).send({ message: 'Pipeline deleted successfully.' });
