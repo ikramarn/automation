@@ -194,6 +194,98 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 // ---------------------------------------------------------------------------
+// Delete button with confirmation
+// ---------------------------------------------------------------------------
+
+function DeleteButton({ pipelineId, pipelineName, onDeleted }: {
+  pipelineId: string;
+  pipelineName: string;
+  onDeleted: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleDelete() {
+    setDeleting(true);
+    setError(null);
+    try {
+      const { createClient } = await import("@/lib/supabase/client");
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const csrfRes = await fetch(`${API_BASE}/auth/csrf-token`, { credentials: "include" });
+      const csrfData = await csrfRes.json();
+      const csrf = (csrfData.csrfToken ?? csrfData.csrf_token ?? "") as string;
+
+      const res = await fetch(`${API_BASE}/pipelines/${pipelineId}`, {
+        method: "DELETE",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrf,
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { message?: string })?.message ?? "Failed to delete pipeline");
+      }
+      onDeleted();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An unexpected error occurred");
+      setDeleting(false);
+      setConfirming(false);
+    }
+  }
+
+  if (!confirming) {
+    return (
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        className="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-600 shadow-sm transition hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2"
+      >
+        Delete pipeline
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+        <svg className="h-5 w-5 shrink-0 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+            d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+        </svg>
+        <p className="text-sm text-red-700">
+          Delete <strong>{pipelineName}</strong>? This cannot be undone.
+        </p>
+        <div className="ml-auto flex gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleDelete}
+            disabled={deleting}
+            className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-red-500 disabled:opacity-50"
+          >
+            {deleting ? "Deleting…" : "Yes, delete"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirming(false)}
+            className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+      {error && <p role="alert" className="text-xs text-red-600">{error}</p>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Toggle buttons (Enable / Disable)
 // ---------------------------------------------------------------------------
 
@@ -530,11 +622,14 @@ function PipelineDetailPageInner() {
         <h2 id="pipeline-actions-heading" className="mb-3 text-base font-semibold text-gray-900">
           Actions
         </h2>
-        <ToggleButtons
-          pipelineId={pipeline.id}
-          status={pipeline.status}
-          onSuccess={() => mutatePipeline()}
-        />
+        <div className="flex flex-wrap items-start gap-4">
+          <ToggleButtons
+            pipelineId={pipeline.id}
+            status={pipeline.status}
+            onSuccess={() => mutatePipeline()}
+          />
+          <DeleteButton pipelineId={pipeline.id} pipelineName={pipeline.name} onDeleted={() => router.push("/dashboard")} />
+        </div>
       </section>
 
       {/* ── Execution history ────────────────────────────────────────────────── */}

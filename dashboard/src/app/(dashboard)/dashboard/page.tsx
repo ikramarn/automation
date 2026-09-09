@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { createClient } from "@/lib/supabase/client";
@@ -128,9 +129,41 @@ function EmptyState() {
 
 // ── Pipeline card ──────────────────────────────────────────────────────────
 
-function PipelineCard({ pipeline }: { pipeline: Pipeline }) {
+function PipelineCard({ pipeline, onDeleted }: { pipeline: Pipeline; onDeleted: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  async function handleDelete(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!confirming) { setConfirming(true); return; }
+
+    setDeleting(true);
+    try {
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
+      const csrfRes = await fetch(`${API_BASE}/auth/csrf-token`, { credentials: "include" });
+      const csrfData = await csrfRes.json();
+      const csrf = csrfData.csrfToken ?? csrfData.csrf_token ?? "";
+
+      const res = await fetch(`${API_BASE}/pipelines/${pipeline.id}`, {
+        method: "DELETE",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrf,
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+      if (res.ok) onDeleted();
+    } finally {
+      setDeleting(false);
+      setConfirming(false);
+    }
+  }
+
   return (
-    <li className="group">
+    <li className="group relative">
       <Link href={`/pipelines/${pipeline.id}`}
         className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition hover:border-indigo-300 hover:shadow-md sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0 flex-1">
@@ -145,6 +178,33 @@ function PipelineCard({ pipeline }: { pipeline: Pipeline }) {
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
         </svg>
       </Link>
+
+      {/* Delete button — sits outside the Link */}
+      <div className="absolute right-12 top-1/2 -translate-y-1/2 flex items-center gap-2">
+        {confirming ? (
+          <>
+            <span className="text-xs text-gray-500 hidden sm:block">Delete?</span>
+            <button type="button" onClick={handleDelete} disabled={deleting}
+              className="rounded-md bg-red-600 px-2.5 py-1 text-xs font-semibold text-white shadow-sm hover:bg-red-500 disabled:opacity-50">
+              {deleting ? "…" : "Yes"}
+            </button>
+            <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setConfirming(false); }}
+              className="rounded-md border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50">
+              No
+            </button>
+          </>
+        ) : (
+          <button type="button" onClick={handleDelete}
+            aria-label={`Delete pipeline ${pipeline.name}`}
+            className="rounded-md p-1.5 text-gray-400 opacity-0 transition hover:text-red-600 group-hover:opacity-100 focus:opacity-100"
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+          </button>
+        )}
+      </div>
     </li>
   );
 }
@@ -303,7 +363,7 @@ export default function DashboardPage() {
 
           {!isLoading && !error && pipelines && pipelines.length > 0 && (
             <ul className="space-y-3" aria-label={`${pipelines.length} pipeline${pipelines.length !== 1 ? "s" : ""}`}>
-              {pipelines.map((p) => <PipelineCard key={p.id} pipeline={p} />)}
+              {pipelines.map((p) => <PipelineCard key={p.id} pipeline={p} onDeleted={() => mutate()} />)}
             </ul>
           )}
 
