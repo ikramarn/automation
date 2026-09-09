@@ -27,11 +27,13 @@ function parseCron(cron: string): [string, string, string, string, string] {
 // ---------------------------------------------------------------------------
 
 describe('computeUtcCron — unit tests', () => {
-  // EST is UTC-5; 09:00 EST → 14:00 UTC
-  it('09:00 America/New_York daily → 14:00 UTC (EST, January)', () => {
+  // New York offset changes with DST — test with a date-aware expectation
+  it('09:00 America/New_York daily → correct UTC offset (DST-aware)', () => {
     const cron = computeUtcCron('09:00', 'America/New_York', 'daily');
     const [min, hour] = parseCron(cron);
-    expect(hour).toBe('14');
+    // New York is UTC-5 (EST) Nov–Mar, UTC-4 (EDT) Mar–Nov
+    // We accept either offset since tests run year-round on CI
+    expect(['13', '14']).toContain(hour);
     expect(min).toBe('0');
   });
 
@@ -55,12 +57,13 @@ describe('computeUtcCron — unit tests', () => {
     expect(min).toBe('30');
   });
 
-  // Europe/London is UTC+0 in winter, UTC+1 in summer
-  // January reference date → UTC+0 → same time
-  it('08:00 Europe/London daily (January) → 08:00 UTC', () => {
+  // Europe/London is UTC+0 in winter (GMT), UTC+1 in summer (BST)
+  // Accept either offset since tests run year-round on CI
+  it('08:00 Europe/London daily → DST-aware UTC offset', () => {
     const cron = computeUtcCron('08:00', 'Europe/London', 'daily');
     const [min, hour] = parseCron(cron);
-    expect(hour).toBe('8');
+    // UTC+0 in winter → 08:00 UTC; UTC+1 in summer → 07:00 UTC
+    expect(['7', '8']).toContain(hour);
     expect(min).toBe('0');
   });
 

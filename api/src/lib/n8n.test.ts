@@ -50,7 +50,8 @@ describe('createN8nWorkflow', () => {
     const id = await createN8nWorkflow('pipeline-123', '0 14 * * *');
 
     expect(id).toBe('workflow-abc');
-    expect(mockFetch).toHaveBeenCalledOnce();
+    // Two calls: POST /workflows (create) + POST /workflows/:id/activate
+    expect(mockFetch).toHaveBeenCalledTimes(2);
 
     const [url, options] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('http://n8n.internal:5678/workflows');
