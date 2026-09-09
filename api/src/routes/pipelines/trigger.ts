@@ -39,7 +39,7 @@ export async function triggerPipelineRoute(app: FastifyInstance): Promise<void> 
       // Verify ownership and fetch pipeline state
       const { data: pipeline, error: fetchError } = await supabase
         .from('pipelines')
-        .select('id, status, n8n_workflow_id, name, niche_keyword, publishing_platforms, schedule_cron_utc')
+        .select('id, status, name, niche_keyword, publishing_platforms, schedule_cron_utc')
         .eq('id', id)
         .eq('user_id', userId)
         .maybeSingle();
@@ -89,7 +89,9 @@ export async function triggerPipelineRoute(app: FastifyInstance): Promise<void> 
         });
       }
 
-      const workflowId = (p['n8n_workflow_id'] as string | null) ?? id;
+      // workflowId is unused by triggerN8nWorkflow (all pipelines route through
+      // the single automation engine webhook) but kept for API compatibility.
+      const workflowId = id;
 
       // Credentials are fetched at execution time by n8n — pass empty map
       const credentials: Record<string, string> = {};

@@ -1,28 +1,20 @@
 /**
- * n8n REST API client.
+ * n8n REST/webhook client.
  *
- * Creates and triggers n8n workflow instances for pipeline automation.
- * Uses N8N_API_URL and N8N_API_KEY environment variables.
+ * Triggers the single, always-on "automation engine" workflow in n8n for
+ * pipeline execution. Uses N8N_API_URL and N8N_API_KEY environment variables.
  *
  * When N8N_API_URL is not set, returns placeholder values for
  * graceful degradation in development/test environments.
+ *
+ * Pipelines no longer have a dedicated per-pipeline n8n workflow. Scheduling
+ * is owned by the API process (see lib/scheduler.ts) — n8n only runs the
+ * automation engine workflow when called via its webhook. This removed an
+ * entire class of bugs where n8n's REST API would mark a per-pipeline
+ * Schedule Trigger workflow as active without the in-memory scheduler
+ * actually registering it (a confirmed, long-standing n8n limitation, not
+ * specific to this project).
  */
-
-/** Minimum n8n workflow structure for pipeline execution. */
-interface N8nWorkflowPayload {
-  name: string;
-  nodes: unknown[];
-  connections: Record<string, unknown>;
-  settings: {
-    executionOrder: string;
-  };
-}
-
-/** Response from n8n POST /workflows */
-interface N8nWorkflowResponse {
-  id: string;
-  [key: string]: unknown;
-}
 
 /** Response from n8n POST /api/v1/workflows/{id}/execute */
 interface N8nExecuteResponse {
@@ -42,132 +34,6 @@ interface N8nExecutionResponse {
   status: string;
   data?: unknown;
   [key: string]: unknown;
-}
-
-/**
- * Creates a workflow in n8n via the REST API.
- *
- * @param pipelineId - The pipeline UUID to associate with the workflow
- * @param cronExpression - UTC cron expression for scheduling (e.g. "0 14 * * *")
- * @returns The n8n workflow ID string
- *
- * @throws Error if the n8n API call fails (only when N8N_API_URL is set)
- */
-export async function createN8nWorkflow(
-  pipelineId: string,
-  cronExpression: string,
-): Promise<string> {
-  const n8nApiUrl = process.env['N8N_API_URL'];
-  const n8nApiKey = process.env['N8N_API_KEY'];
-
-  // Graceful degradation: return placeholder when n8n is not configured
-  if (!n8nApiUrl) {
-    return `n8n-placeholder-${pipelineId}`;
-  }
-
-  const internalApiUrl = process.env['API_URL'] ?? process.env['APP_URL'] ?? '';
-  const serviceToken = process.env['N8N_SERVICE_TOKEN'] ?? '';
-
-  const workflowPayload: N8nWorkflowPayload = {
-    name: `pipeline-${pipelineId}`,
-    nodes: [
-      {
-        id: 'schedule-trigger',
-        name: 'Schedule Trigger',
-        type: 'n8n-nodes-base.scheduleTrigger',
-        typeVersion: 1.2,
-        position: [0, 0],
-        parameters: {
-          rule: {
-            interval: [
-              {
-                field: 'cronExpression',
-                expression: cronExpression,
-              },
-            ],
-          },
-        },
-      },
-      {
-        id: 'trigger-pipeline',
-        name: 'Trigger Pipeline',
-        type: 'n8n-nodes-base.httpRequest',
-        typeVersion: 4.2,
-        position: [240, 0],
-        parameters: {
-          method: 'POST',
-          url: `${internalApiUrl}/internal/trigger-pipeline`,
-          sendHeaders: true,
-          headerParameters: {
-            parameters: [
-              { name: 'Content-Type', value: 'application/json' },
-              { name: 'Authorization', value: `Bearer ${serviceToken}` },
-            ],
-          },
-          sendBody: true,
-          contentType: 'json',
-          body: {
-            pipeline_id: pipelineId,
-          },
-          options: {
-            response: {
-              response: {
-                neverError: true,
-              },
-            },
-          },
-        },
-        continueOnFail: true,
-      },
-    ],
-    connections: {
-      'Schedule Trigger': {
-        main: [[{ node: 'Trigger Pipeline', type: 'main', index: 0 }]],
-      },
-    },
-    settings: {
-      executionOrder: 'v1',
-    },
-  };
-
-  const response = await fetch(`${n8nApiUrl}/workflows`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-N8N-API-KEY': n8nApiKey ?? '',
-    },
-    body: JSON.stringify(workflowPayload),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => 'unknown error');
-    throw new Error(
-      `n8n workflow creation failed: HTTP ${response.status} - ${errorText}`,
-    );
-  }
-
-  const data = (await response.json()) as N8nWorkflowResponse;
-
-  if (!data.id) {
-    throw new Error('n8n workflow creation response missing workflow ID');
-  }
-
-  // Activate the workflow immediately so the schedule trigger fires
-  const activateResponse = await fetch(`${n8nApiUrl}/workflows/${data.id}/activate`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-N8N-API-KEY': n8nApiKey ?? '',
-    },
-  });
-
-  if (!activateResponse.ok) {
-    // Log but don't fail — workflow was created, just not activated
-    const errText = await activateResponse.text().catch(() => 'unknown');
-    console.warn(`[n8n] Warning: workflow ${data.id} created but activation failed: ${errText}`);
-  }
-
-  return data.id;
 }
 
 /**

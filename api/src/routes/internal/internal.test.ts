@@ -645,6 +645,15 @@ describe('POST /internal/trigger-pipeline', () => {
             }),
           };
         }
+        if (table === 'execution_logs') {
+          // No execution currently running
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            limit: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+          };
+        }
         // user_profiles
         return {
           select: vi.fn().mockReturnThis(),
@@ -664,49 +673,6 @@ describe('POST /internal/trigger-pipeline', () => {
   });
 
   it('active pipeline + active subscription → triggers n8n and returns executionId', async () => {
-    vi.mocked(createSupabaseAdminClient).mockReturnValue({
-      from: vi.fn((table: string) => {
-        if (table === 'pipelines') {
-          return {
-            select: vi.fn().mockReturnThis(),
-            eq: vi.fn().mockReturnThis(),
-            maybeSingle: vi.fn().mockResolvedValue({
-              data: {
-                id: 'pipe-1',
-                user_id: 'uid',
-                status: 'active',
-                n8n_workflow_id: 'wf-abc',
-                name: 'My Pipeline',
-                niche_keyword: 'tech news',
-                publishing_platforms: ['youtube', 'tiktok'],
-                schedule_cron_utc: '0 12 * * *',
-              },
-              error: null,
-            }),
-          };
-        }
-        if (table === 'user_profiles') {
-          return {
-            select: vi.fn().mockReturnThis(),
-            eq: vi.fn().mockReturnThis(),
-            maybeSingle: vi.fn().mockResolvedValue({
-              data: { subscription_status: 'active' },
-              error: null,
-            }),
-          };
-        }
-        // credentials table
-        return {
-          select: vi.fn().mockReturnThis(),
-          eq: vi.fn().mockReturnThis(),
-          // Return resolved value for chained .eq().eq()
-          then: undefined,
-          // Simulate the final result
-          [Symbol.asyncIterator]: undefined,
-        };
-      }),
-    } as unknown as ReturnType<typeof createSupabaseAdminClient>);
-
     // credentials query returns active rows
     vi.mocked(createSupabaseAdminClient).mockReturnValue({
       from: vi.fn((table: string) => {
@@ -727,6 +693,15 @@ describe('POST /internal/trigger-pipeline', () => {
               },
               error: null,
             }),
+          };
+        }
+        if (table === 'execution_logs') {
+          // No execution currently running
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            limit: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
           };
         }
         if (table === 'user_profiles') {
@@ -814,9 +789,11 @@ describe('POST /internal/trigger-pipeline', () => {
             }),
           };
         }
+        // execution_logs (running-check) and any other table
         return {
           select: vi.fn().mockReturnThis(),
           eq: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockReturnThis(),
           maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
         };
       }),

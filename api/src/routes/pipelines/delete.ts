@@ -12,8 +12,9 @@ import { createSupabaseAdminClient } from '../../lib/supabase.js';
  * If no execution is running, the record is deleted immediately.
  * CASCADE on the foreign key handles associated execution_logs.
  *
- * n8n workflow cancellation is attempted best-effort and does not block
- * the response.
+ * There is no per-pipeline n8n workflow to clean up — scheduling is owned
+ * by the API's in-process scheduler (lib/scheduler.ts), which only fires
+ * rows that exist in `pipelines`.
  *
  * Requirements: 6.8, 12.6
  */
@@ -39,7 +40,7 @@ export async function deletePipelineRoute(app: FastifyInstance): Promise<void> {
       // Verify ownership
       const { data: pipeline, error: fetchError } = await supabase
         .from('pipelines')
-        .select('id, n8n_workflow_id, status')
+        .select('id, status')
         .eq('id', id)
         .eq('user_id', userId)
         .maybeSingle();
@@ -52,8 +53,6 @@ export async function deletePipelineRoute(app: FastifyInstance): Promise<void> {
       if (!pipeline) {
         throw AppError.notFound('Pipeline');
       }
-
-      const p = pipeline as Record<string, unknown>;
 
       // Check for in-progress execution (Req 6.8)
       const { data: runningExec, error: execError } = await supabase
@@ -99,34 +98,9 @@ export async function deletePipelineRoute(app: FastifyInstance): Promise<void> {
         throw AppError.internal('Failed to delete pipeline');
       }
 
-      // Best-effort: deactivate then delete n8n workflow (non-blocking, fire-and-forget)
-      const workflowId = p['n8n_workflow_id'] as string | null;
-      if (workflowId && process.env['N8N_API_URL'] && !workflowId.startsWith('n8n-placeholder-')) {
-        const n8nApiUrl = process.env['N8N_API_URL'];
-        const n8nApiKey = process.env['N8N_API_KEY'] ?? '';
-
-        // Deactivate first, then delete — n8n requires deactivation before deletion
-        fetch(
-          `${n8nApiUrl}/workflows/${encodeURIComponent(workflowId)}/deactivate`,
-          {
-            method: 'POST',
-            headers: { 'X-N8N-API-KEY': n8nApiKey },
-          },
-        )
-          .then(() =>
-            fetch(
-              `${n8nApiUrl}/workflows/${encodeURIComponent(workflowId)}`,
-              {
-                method: 'DELETE',
-                headers: { 'X-N8N-API-KEY': n8nApiKey },
-              },
-            ),
-          )
-          .catch((err: unknown) => {
-            request.log.warn({ pipelineId: id, workflowId, err }, 'Failed to delete n8n workflow (best-effort)');
-          });
-      }
-
+      // No n8n workflow to clean up — scheduling is owned by the API's
+      // in-process scheduler, which only fires rows that still exist in
+      // `pipelines`. Deleting the row is sufficient.
       return reply.status(200).send({ message: 'Pipeline deleted successfully.' });
     },
   );

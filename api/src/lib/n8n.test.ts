@@ -10,7 +10,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  createN8nWorkflow,
   getN8nExecutionStatus,
   triggerN8nWorkflow,
 } from './n8n.js';
@@ -27,77 +26,6 @@ function makeFetchMock(status: number, body: unknown) {
     text: () => Promise.resolve(JSON.stringify(body)),
   });
 }
-
-// ---------------------------------------------------------------------------
-// createN8nWorkflow
-// ---------------------------------------------------------------------------
-
-describe('createN8nWorkflow', () => {
-  const originalEnv = process.env;
-
-  beforeEach(() => {
-    process.env = { ...originalEnv };
-  });
-
-  afterEach(() => {
-    process.env = originalEnv;
-    vi.restoreAllMocks();
-  });
-
-  it('calls POST /workflows when N8N_API_URL is set', async () => {
-    // Production format: N8N_API_URL already contains /api/v1
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
-    process.env['N8N_API_KEY'] = 'test-key';
-
-    const mockFetch = makeFetchMock(200, { id: 'workflow-abc' });
-    vi.stubGlobal('fetch', mockFetch);
-
-    const id = await createN8nWorkflow('pipeline-123', '0 14 * * *');
-
-    expect(id).toBe('workflow-abc');
-    // Two calls: POST /workflows (create) + POST /workflows/:id/activate
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-
-    const [url, options] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('http://n8n.internal:5678/api/v1/workflows');
-    expect(options.method).toBe('POST');
-    expect((options.headers as Record<string, string>)['X-N8N-API-KEY']).toBe('test-key');
-
-    const body = JSON.parse(options.body as string) as { name: string };
-    expect(body.name).toBe('pipeline-pipeline-123');
-  });
-
-  it('returns a placeholder ID when N8N_API_URL is not set', async () => {
-    delete process.env['N8N_API_URL'];
-
-    const id = await createN8nWorkflow('pipeline-456', '0 9 * * 1-5');
-
-    expect(id).toBe('n8n-placeholder-pipeline-456');
-  });
-
-  it('throws when the n8n API returns a non-OK status', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
-    process.env['N8N_API_KEY'] = 'test-key';
-
-    const mockFetch = makeFetchMock(500, { message: 'Internal Server Error' });
-    vi.stubGlobal('fetch', mockFetch);
-
-    await expect(
-      createN8nWorkflow('pipeline-789', '0 14 * * *'),
-    ).rejects.toThrow('n8n workflow creation failed: HTTP 500');
-  });
-
-  it('throws when the response is missing an id field', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
-
-    const mockFetch = makeFetchMock(200, { name: 'no-id-here' });
-    vi.stubGlobal('fetch', mockFetch);
-
-    await expect(
-      createN8nWorkflow('pipeline-000', '0 14 * * *'),
-    ).rejects.toThrow('n8n workflow creation response missing workflow ID');
-  });
-});
 
 // ---------------------------------------------------------------------------
 // triggerN8nWorkflow

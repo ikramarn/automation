@@ -2,7 +2,6 @@ import type { FastifyInstance } from 'fastify';
 import { AppError } from '../../errors/AppError.js';
 import { createSupabaseAdminClient } from '../../lib/supabase.js';
 import { computeUtcCron } from '../../lib/cronUtils.js';
-import { createN8nWorkflow } from '../../lib/n8n.js';
 
 /** Request body for POST /pipelines */
 interface CreatePipelineBody {
@@ -41,8 +40,11 @@ interface CreatePipelineBody {
  *  2. Check HeyGen API key present in credentials table
  *  3. Compute UTC cron expression
  *  4. Insert pipeline record
- *  5. Create n8n workflow and update pipeline record
- *  6. Return 201 with created pipeline
+ *  5. Return 201 with created pipeline
+ *
+ * Scheduling is owned entirely by the API's in-process scheduler
+ * (lib/scheduler.ts), which reads `schedule_cron_utc` directly — there is no
+ * per-pipeline n8n workflow to create or activate.
  *
  * Requirements: 6.1, 6.2, 6.3, 6.6
  */
@@ -244,33 +246,10 @@ export async function createPipelineRoute(app: FastifyInstance): Promise<void> {
         throw AppError.internal('Failed to create pipeline');
       }
 
-      const createdPipeline = pipeline as Record<string, unknown>;
-
-      // ── Step 5: Create n8n workflow and update pipeline ──────────────────
-      let n8nWorkflowId: string;
-      try {
-        n8nWorkflowId = await createN8nWorkflow(createdPipeline['id'] as string, cronExpression);
-      } catch (err) {
-        // Log but don't fail the request — pipeline is created, n8n can be linked later
-        request.log.error({ err, pipelineId: createdPipeline['id'] }, 'Failed to create n8n workflow');
-        n8nWorkflowId = `n8n-placeholder-${createdPipeline['id'] as string}`;
-      }
-
-      // Update the pipeline with the n8n workflow ID
-      const { data: updatedPipeline, error: updateError } = await supabase
-        .from('pipelines')
-        .update({ n8n_workflow_id: n8nWorkflowId })
-        .eq('id', createdPipeline['id'] as string)
-        .select()
-        .single();
-
-      if (updateError || !updatedPipeline) {
-        // Return the pipeline without the workflow ID rather than failing
-        return reply.status(201).send(createdPipeline);
-      }
-
-      // ── Step 6: Return 201 with created pipeline ─────────────────────────
-      return reply.status(201).send(updatedPipeline);
+      // ── Step 5: Return 201 with created pipeline ─────────────────────────
+      // The scheduler picks up this pipeline on its next minute tick — no
+      // n8n workflow creation or activation step required.
+      return reply.status(201).send(pipeline);
     },
   );
 }

@@ -1,24 +1,23 @@
 /**
- * Integration tests — n8n trigger and R2 lifecycle.
+ * Integration tests — pipeline trigger flow.
  *
- * Covers end-to-end interactions between pipeline routes and the n8n API:
- *   1. POST /pipelines (valid data) creates pipeline AND calls createN8nWorkflow
+ * Covers end-to-end interactions between pipeline routes and the n8n
+ * webhook client:
+ *   1. POST /pipelines (valid data) creates pipeline — no n8n workflow object
+ *      is created; scheduling is owned by the API's in-process scheduler.
  *   2. POST /internal/trigger-pipeline (active pipeline, active subscription) calls triggerN8nWorkflow
  *   3. POST /internal/trigger-pipeline (paused pipeline) returns skipped=true, no n8n call
  *   4. POST /internal/trigger-pipeline (inactive subscription) returns skipped=true, no n8n call
  *   5. POST /internal/trigger-pipeline (no service token) returns 401
  *   6. POST /pipelines/:id/trigger (already running) creates skipped log, returns 200 skipped=true
- *   7. POST /pipelines/:id/disable calls n8n deactivate API (best-effort)
- *   8. POST /pipelines/:id/enable calls n8n activate API (best-effort)
+ *   7. POST /pipelines/:id/disable and /enable just flip the status column —
+ *      no n8n API calls are made (see toggle.ts docstring for rationale)
  *
  * Mock strategy:
  *   - Supabase admin client mocked via vi.mock() — no real DB calls
- *   - global.fetch mocked via vi.stubGlobal() — intercepts both n8n workflow
- *     creation (createN8nWorkflow) and the best-effort activate/deactivate
- *     calls in toggle.ts
  *   - triggerN8nWorkflow (used inside the internal trigger route and the manual
- *     trigger route) is mocked so its internal fetch path is never hit, keeping
- *     assertions simple
+ *     trigger route, both via lib/pipelineExecutor.ts) is mocked so its
+ *     internal fetch path is never hit, keeping assertions simple
  *
  * Requirements: 3.7, 6.1, 12.4, 12.5, 12.6, 12.8, 18.5
  */
@@ -36,8 +35,7 @@ process.env['NODE_ENV'] = 'test';
 process.env['SUPABASE_URL'] = 'https://test.supabase.co';
 process.env['SUPABASE_SERVICE_ROLE_KEY'] = 'test-service-role-key';
 process.env['N8N_SERVICE_TOKEN'] = 'integration-service-token-abc';
-// Set N8N_API_URL so the best-effort fetch calls in toggle.ts fire
-process.env['N8N_API_URL'] = 'https://n8n.test.internal';
+process.env['N8N_API_URL'] = 'https://n8n.test.internal/api/v1';
 process.env['N8N_API_KEY'] = 'n8n-test-key';
 
 // ── Supabase mock (module-level so vi.mock factory captures it) ───────────────
@@ -47,17 +45,16 @@ vi.mock('../lib/supabase.js', () => ({
   createSupabaseAdminClient: () => ({ from: mockFrom }),
 }));
 
-// ── n8n mocks ─────────────────────────────────────────────────────────────────
-// createN8nWorkflow is mocked at the module level.
-// triggerN8nWorkflow is also mocked so the internal trigger route works without
-// a real n8n server.
-const { mockCreateN8nWorkflow, mockTriggerN8nWorkflow } = vi.hoisted(() => ({
-  mockCreateN8nWorkflow: vi.fn().mockResolvedValue('wf-integration-123'),
+// ── n8n mock ──────────────────────────────────────────────────────────────────
+// triggerN8nWorkflow is mocked so the internal trigger route (via
+// lib/pipelineExecutor.ts) and the manual trigger route work without a real
+// n8n server. There is no createN8nWorkflow anymore — pipelines have no
+// per-pipeline n8n workflow object.
+const { mockTriggerN8nWorkflow } = vi.hoisted(() => ({
   mockTriggerN8nWorkflow: vi.fn().mockResolvedValue({ executionId: 'exec-integration-456' }),
 }));
 
 vi.mock('../lib/n8n.js', () => ({
-  createN8nWorkflow: mockCreateN8nWorkflow,
   triggerN8nWorkflow: mockTriggerN8nWorkflow,
   getN8nExecutionStatus: vi.fn().mockResolvedValue({ status: 'running' }),
 }));
@@ -77,7 +74,6 @@ vi.mock('../lib/email.js', () => ({
 const SERVICE_TOKEN = 'integration-service-token-abc';
 const USER_ID = 'user-int-test-001';
 const PIPELINE_ID = 'pipe-int-test-00000000-0001';
-const WORKFLOW_ID = 'wf-integration-123';
 
 const samplePipeline = {
   id: PIPELINE_ID,
@@ -97,7 +93,7 @@ const samplePipeline = {
   target_duration_secs: 60,
   gdrive_folder_id: null,
   status: 'active',
-  n8n_workflow_id: WORKFLOW_ID,
+  n8n_workflow_id: null,
   last_execution_at: null,
   last_execution_status: null,
   consecutive_failures: 0,
@@ -178,15 +174,14 @@ afterAll(async () => {
 beforeEach(() => {
   vi.clearAllMocks();
   // Restore default mock return values after clearAllMocks
-  mockCreateN8nWorkflow.mockResolvedValue('wf-integration-123');
   mockTriggerN8nWorkflow.mockResolvedValue({ executionId: 'exec-integration-456' });
   testJwt = undefined; // Force re-sign so JWT is fresh
 });
 
-// ── Test 1: POST /pipelines creates pipeline AND calls createN8nWorkflow ──────
+// ── Test 1: POST /pipelines creates a pipeline row (no n8n workflow) ──────────
 
-describe('Test 1 — POST /pipelines: creates pipeline AND creates n8n workflow', () => {
-  it('calls createN8nWorkflow and returns 201 with n8n_workflow_id set', async () => {
+describe('Test 1 — POST /pipelines: creates pipeline with no n8n workflow object', () => {
+  it('returns 201 without calling any n8n workflow-creation API', async () => {
     const createdPipeline = {
       id: PIPELINE_ID,
       user_id: USER_ID,
@@ -198,9 +193,7 @@ describe('Test 1 — POST /pipelines: creates pipeline AND creates n8n workflow'
       schedule_timezone: 'America/New_York',
       schedule_cron_utc: '0 14 * * *',
       status: 'active',
-      n8n_workflow_id: null, // before update
     };
-    const updatedPipeline = { ...createdPipeline, n8n_workflow_id: 'wf-integration-123' };
 
     mockFrom.mockImplementation((table: string) => {
       if (table === 'user_profiles') {
@@ -208,25 +201,15 @@ describe('Test 1 — POST /pipelines: creates pipeline AND creates n8n workflow'
         return buildChain({ data: { pipeline_limit: 5 }, error: null });
       }
       if (table === 'pipelines') {
-        // The create handler queries pipelines three times:
+        // The create handler queries pipelines twice:
         //  1. count query (.select('id', { count: 'exact', head: true }).eq())
         //  2. insert().select().single()
-        //  3. update().eq().select().single()
-        let pipCallCount = 0;
-        const pipChain: Record<string, unknown> = {};
         const buildCountChain = () => ({
           eq: vi.fn().mockResolvedValue({ count: 0, error: null }),
         });
         const buildInsertChain = () => ({
           select: vi.fn().mockReturnValue({
             single: vi.fn().mockResolvedValue({ data: createdPipeline, error: null }),
-          }),
-        });
-        const buildUpdateChain = () => ({
-          eq: vi.fn().mockReturnValue({
-            select: vi.fn().mockReturnValue({
-              single: vi.fn().mockResolvedValue({ data: updatedPipeline, error: null }),
-            }),
           }),
         });
 
@@ -240,7 +223,6 @@ describe('Test 1 — POST /pipelines: creates pipeline AND creates n8n workflow'
         return {
           select: selectMock,
           insert: vi.fn().mockReturnValue(buildInsertChain()),
-          update: vi.fn().mockReturnValue(buildUpdateChain()),
         };
       }
       if (table === 'credentials') {
@@ -273,16 +255,12 @@ describe('Test 1 — POST /pipelines: creates pipeline AND creates n8n workflow'
     });
 
     expect(response.statusCode).toBe(201);
-    const body = response.json<{ id: string; n8n_workflow_id: string }>();
+    const body = response.json<{ id: string }>();
     expect(body.id).toBe(PIPELINE_ID);
-    expect(body.n8n_workflow_id).toBe('wf-integration-123');
 
-    // createN8nWorkflow must have been called with the pipeline ID and a cron expression
-    expect(mockCreateN8nWorkflow).toHaveBeenCalledOnce();
-    expect(mockCreateN8nWorkflow).toHaveBeenCalledWith(
-      PIPELINE_ID,
-      expect.stringMatching(/^\d+ \d+ \* \* \*/), // UTC cron format
-    );
+    // No n8n workflow-creation call should ever be made — the pipeline row
+    // itself (with schedule_cron_utc) is the only thing the scheduler needs.
+    expect(mockTriggerN8nWorkflow).not.toHaveBeenCalled();
   });
 });
 
@@ -296,6 +274,10 @@ describe('Test 2 — POST /internal/trigger-pipeline: active pipeline, active su
       }
       if (table === 'user_profiles') {
         return buildChain({ data: { subscription_status: 'active' }, error: null });
+      }
+      if (table === 'execution_logs') {
+        // No execution currently running
+        return buildChain({ data: null, error: null });
       }
       if (table === 'credentials') {
         // Return chained eq().eq() for the credential query
@@ -331,7 +313,7 @@ describe('Test 2 — POST /internal/trigger-pipeline: active pipeline, active su
 
     expect(mockTriggerN8nWorkflow).toHaveBeenCalledOnce();
     expect(mockTriggerN8nWorkflow).toHaveBeenCalledWith(
-      WORKFLOW_ID,
+      PIPELINE_ID, // workflowId falls back to pipelineId when n8n_workflow_id is null
       expect.objectContaining({ heygen_api_key: 'decrypted-api-key' }),
       expect.objectContaining({ pipeline_id: PIPELINE_ID }),
     );
@@ -377,6 +359,9 @@ describe('Test 4 — POST /internal/trigger-pipeline: inactive subscription retu
     mockFrom.mockImplementation((table: string) => {
       if (table === 'pipelines') {
         return buildChain({ data: samplePipeline, error: null });
+      }
+      if (table === 'execution_logs') {
+        return buildChain({ data: null, error: null });
       }
       if (table === 'user_profiles') {
         return buildChain({ data: { subscription_status: 'expired' }, error: null });
@@ -507,29 +492,10 @@ describe('Test 6 — POST /pipelines/:id/trigger: already-running guard creates 
   });
 });
 
-// ── Test 7: POST /pipelines/:id/disable → calls n8n deactivate API ────────────
+// ── Test 7: POST /pipelines/:id/disable and /enable — pure status flips ───────
 
-describe('Test 7 — POST /pipelines/:id/disable: calls n8n deactivate API (best-effort)', () => {
-  let fetchSpy: ReturnType<typeof vi.fn>;
-  let originalFetch: typeof global.fetch;
-
-  beforeEach(() => {
-    originalFetch = global.fetch;
-    // Stub global fetch to capture best-effort n8n calls
-    fetchSpy = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({}),
-      text: async () => '',
-    } as unknown as Response);
-    vi.stubGlobal('fetch', fetchSpy);
-  });
-
-  afterEach(() => {
-    vi.stubGlobal('fetch', originalFetch);
-  });
-
-  it('fires a best-effort POST to the n8n deactivate endpoint', async () => {
+describe('Test 7 — POST /pipelines/:id/disable and /enable: pure status column updates, no n8n calls', () => {
+  it('disable sets status=disabled without calling any n8n API', async () => {
     const disabledPipeline = { ...samplePipeline, status: 'disabled' };
 
     let callCount = 0;
@@ -561,44 +527,11 @@ describe('Test 7 — POST /pipelines/:id/disable: calls n8n deactivate API (best
     const body = response.json<{ pipeline: { status: string } }>();
     expect(body.pipeline.status).toBe('disabled');
 
-    // Allow the fire-and-forget fetch to settle (it's not awaited in the handler)
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    // Verify n8n deactivate was called
-    const deactivateCalls = fetchSpy.mock.calls.filter(
-      ([url]: [string]) =>
-        typeof url === 'string' && url.includes(`/workflows/${WORKFLOW_ID}/deactivate`),
-    );
-    expect(deactivateCalls).toHaveLength(1);
-    expect(deactivateCalls[0]?.[1]).toMatchObject({
-      method: 'POST',
-      headers: expect.objectContaining({ 'X-N8N-API-KEY': 'n8n-test-key' }),
-    });
-  });
-});
-
-// ── Test 8: POST /pipelines/:id/enable → calls n8n activate API ──────────────
-
-describe('Test 8 — POST /pipelines/:id/enable: calls n8n activate API (best-effort)', () => {
-  let fetchSpy: ReturnType<typeof vi.fn>;
-  let originalFetch: typeof global.fetch;
-
-  beforeEach(() => {
-    originalFetch = global.fetch;
-    fetchSpy = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({}),
-      text: async () => '',
-    } as unknown as Response);
-    vi.stubGlobal('fetch', fetchSpy);
+    // No n8n API calls of any kind — this route no longer touches n8n at all.
+    expect(mockTriggerN8nWorkflow).not.toHaveBeenCalled();
   });
 
-  afterEach(() => {
-    vi.stubGlobal('fetch', originalFetch);
-  });
-
-  it('fires a best-effort POST to the n8n activate endpoint', async () => {
+  it('enable sets status=active without calling any n8n API', async () => {
     const enabledPipeline = { ...samplePipeline, status: 'active' };
 
     let callCount = 0;
@@ -610,9 +543,6 @@ describe('Test 8 — POST /pipelines/:id/enable: calls n8n activate API (best-ef
       }
       return buildChain({ data: null, error: null });
     });
-
-    // resetConsecutiveFailures also calls supabase — already handled by the default
-    // buildChain fallthrough above
 
     const token = await getTestJwt(app);
 
@@ -630,18 +560,6 @@ describe('Test 8 — POST /pipelines/:id/enable: calls n8n activate API (best-ef
     const body = response.json<{ pipeline: { status: string } }>();
     expect(body.pipeline.status).toBe('active');
 
-    // Allow the fire-and-forget fetch to settle
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    // Verify n8n activate was called
-    const activateCalls = fetchSpy.mock.calls.filter(
-      ([url]: [string]) =>
-        typeof url === 'string' && url.includes(`/workflows/${WORKFLOW_ID}/activate`),
-    );
-    expect(activateCalls).toHaveLength(1);
-    expect(activateCalls[0]?.[1]).toMatchObject({
-      method: 'POST',
-      headers: expect.objectContaining({ 'X-N8N-API-KEY': 'n8n-test-key' }),
-    });
+    expect(mockTriggerN8nWorkflow).not.toHaveBeenCalled();
   });
 });
