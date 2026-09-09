@@ -114,20 +114,13 @@ export const maskValue = maskApiKey;
 export async function getDecryptedSecret(vaultSecretId: string): Promise<string | null> {
   const supabase = createSupabaseAdminClient();
 
+  // Use RPC to bypass schema switching issues with vault.decrypted_secrets
   const { data, error } = await supabase
-    .schema('vault')
-    .from('decrypted_secrets')
-    .select('decrypted_secret')
-    .eq('id', vaultSecretId)
-    .maybeSingle();
+    .rpc('get_vault_secret', { secret_id: vaultSecretId });
 
   if (error) {
     throw new Error(`Failed to retrieve vault secret ${vaultSecretId}: ${error.message}`);
   }
 
-  if (!data) {
-    return null;
-  }
-
-  return (data as Record<string, unknown>)['decrypted_secret'] as string | null;
+  return data as string | null;
 }
