@@ -114,6 +114,21 @@ export async function createN8nWorkflow(
     throw new Error('n8n workflow creation response missing workflow ID');
   }
 
+  // Activate the workflow immediately so the schedule trigger fires
+  const activateResponse = await fetch(`${n8nApiUrl}/workflows/${data.id}/activate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-N8N-API-KEY': n8nApiKey ?? '',
+    },
+  });
+
+  if (!activateResponse.ok) {
+    // Log but don't fail — workflow was created, just not activated
+    const errText = await activateResponse.text().catch(() => 'unknown');
+    console.warn(`[n8n] Warning: workflow ${data.id} created but activation failed: ${errText}`);
+  }
+
   return data.id;
 }
 
