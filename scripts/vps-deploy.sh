@@ -82,4 +82,16 @@ echo "==> nextjs container started"
 docker image prune -f
 rm -f /tmp/api.env /tmp/nextjs.env
 
+# ── Restart n8n to re-register all active workflow schedules ─────────────────
+# n8n loads its workflow scheduler at startup. After a deploy the scheduler
+# state can be stale (e.g. newly-created pipelines not yet registered, or old
+# workflow IDs still loaded). A quick restart ensures all active pipeline
+# schedule workflows fire on time.
+echo "==> Restarting n8n to re-register workflow schedules..."
+docker restart n8n
+echo "==> Waiting 15s for n8n to come back up..."
+sleep 15
+docker logs n8n --since 20s 2>&1 | grep -E "Started|ready|Error" | head -10
+echo "==> n8n restarted"
+
 echo "==> Deploy complete: ${IMAGE_TAG}"
