@@ -12,7 +12,7 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import useSWR from "swr";
 import { useExecutionLogs, type ExecutionLog } from "@/hooks/useExecutionLogs";
 
@@ -344,7 +344,14 @@ export default function PipelineDetailPage() {
   } = useSWR<Pipeline>(
     pipelineId ? `${API_BASE}/pipelines/${pipelineId}` : null,
     fetchPipeline,
-    { revalidateOnFocus: true }
+    {
+      revalidateOnFocus: false,
+      onErrorRetry: (err, _key, _config, revalidate, { retryCount }) => {
+        if (err?.message?.includes("401") || err?.message?.includes("Unauthorized")) return;
+        if (retryCount >= 3) return;
+        setTimeout(() => revalidate({ retryCount }), 5000);
+      },
+    }
   );
 
   // Realtime execution logs (Req 13.5)
@@ -358,9 +365,11 @@ export default function PipelineDetailPage() {
   const pageLogs = logs?.slice(pageOffset, pageOffset + PAGE_SIZE) ?? [];
 
   // Reset to page 1 when new data arrives and current page is out of range
-  if (page > totalPages && totalPages > 0) {
-    setPage(1);
-  }
+  useEffect(() => {
+    if (page > totalPages && totalPages > 0) {
+      setPage(1);
+    }
+  }, [page, totalPages]);
 
   // ---------------------------------------------------------------------------
   // Loading state
@@ -433,14 +442,7 @@ export default function PipelineDetailPage() {
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {/* Edit link */}
-          <Link
-            href={`/pipelines/${pipeline.id}/edit`}
-            className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 shadow-sm transition hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
-            aria-label="Edit pipeline"
-          >
-            Edit
-          </Link>
+          {/* Manual trigger button — future feature */}
         </div>
       </div>
 
