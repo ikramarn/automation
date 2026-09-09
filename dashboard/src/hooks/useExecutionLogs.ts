@@ -104,7 +104,10 @@ async function fetchExecutionLogs(url: string): Promise<ExecutionLog[]> {
     );
   }
 
-  return res.json();
+  // API returns { data: ExecutionLog[], total, page, pageSize, totalPages }
+  const json = await res.json();
+  // Support both plain array (legacy) and paginated object
+  return Array.isArray(json) ? json : (json?.data ?? []);
 }
 
 // ---------------------------------------------------------------------------

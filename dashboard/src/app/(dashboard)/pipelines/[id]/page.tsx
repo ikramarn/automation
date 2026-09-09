@@ -489,11 +489,12 @@ function PipelineDetailPageInner() {
   const { logs, isLoading: logsLoading, error: logsError } = useExecutionLogs(pipelineId);
 
   // Client-side pagination of the logs returned by the hook
-  const totalLogs = logs?.length ?? 0;
+  const rawLogs = Array.isArray(logs) ? logs : [];
+  const totalLogs = rawLogs.length;
   const totalPages = Math.max(1, Math.ceil(totalLogs / PAGE_SIZE));
   const clampedPage = Math.min(page, totalPages);
   const pageOffset = (clampedPage - 1) * PAGE_SIZE;
-  const pageLogs = logs?.slice(pageOffset, pageOffset + PAGE_SIZE) ?? [];
+  const pageLogs = rawLogs.slice(pageOffset, pageOffset + PAGE_SIZE);
 
   // Reset to page 1 when new data arrives and current page is out of range
   useEffect(() => {
