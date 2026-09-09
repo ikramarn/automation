@@ -55,6 +55,7 @@ export async function triggerPipelineRoute(app: FastifyInstance): Promise<void> 
         .from('pipelines')
         .select(
           'id, user_id, status, n8n_workflow_id, name, niche_keyword, publishing_platforms, schedule_cron_utc, ' +
+          'content_source, heygen_custom_script, ' +
           'heygen_mode, heygen_engine, heygen_avatar_id, heygen_voice_id, heygen_resolution, heygen_aspect_ratio, ' +
           'heygen_motion_prompt, heygen_agent_prompt, heygen_orientation, ' +
           'video_language, script_tone, openai_model, target_duration_secs, gdrive_folder_id',
@@ -168,6 +169,9 @@ export async function triggerPipelineRoute(app: FastifyInstance): Promise<void> 
         niche_keyword: p['niche_keyword'],
         publishing_platforms: p['publishing_platforms'],
         schedule_cron_utc: p['schedule_cron_utc'],
+        // Content source config
+        content_source:        p['content_source']        ?? 'openai',
+        heygen_custom_script:  p['heygen_custom_script']  ?? null,
         // HeyGen generation config
         heygen_mode:          p['heygen_mode']          ?? 'classic',
         heygen_engine:        p['heygen_engine']         ?? 'avatar_iv',

@@ -468,6 +468,7 @@ async function runVideoGenerator(ctx, httpPost, httpGet, r2Put) {
   const apiKey = ctx.credentials?.heygen_api_key;
   if (!apiKey) throw new Error('HeyGen API key not configured');
 
+  const contentSource  = ctx.content_source   || 'openai';
   const mode           = ctx.heygen_mode        || 'classic';
   const engine         = ctx.heygen_engine       || 'avatar_iv';
   const voiceId        = ctx.heygen_voice_id     || '';
@@ -483,11 +484,9 @@ async function runVideoGenerator(ctx, httpPost, httpGet, r2Put) {
   };
 
   let videoId;
-  let sessionId = null;
 
-  if (mode === 'agent') {
-    // ── Video Agent mode ───────────────────────────────────────────────────
-    // Build a rich prompt from the pipeline config so the agent has context.
+  // ── AGENT MODE ─────────────────────────────────────────────────────────
+  if (contentSource === 'agent' || mode === 'agent') {
     const agentPrompt =
       ctx.heygen_agent_prompt ||
       buildAgentPromptFromContext(ctx);
@@ -499,11 +498,8 @@ async function runVideoGenerator(ctx, httpPost, httpGet, r2Put) {
       { apiKey, prompt: agentPrompt, avatarId, voiceId, orientation },
       httpPost
     );
-    sessionId = result.sessionId;
-    videoId   = result.videoId;
 
-    // Poll both session and video until done
-    const videoUrl = await pollHeyGenAgentStatus(sessionId, videoId, apiKey, 90, httpGet);
+    const videoUrl = await pollHeyGenAgentStatus(result.sessionId, result.videoId, apiKey, 90, httpGet);
 
     const { r2_object_key, video_file_size_bytes } = await uploadToR2(
       videoUrl, r2Config,
@@ -512,17 +508,23 @@ async function runVideoGenerator(ctx, httpPost, httpGet, r2Put) {
     );
 
     return {
-      heygen_video_id: sessionId, // use session_id as the tracking ID for agent mode
+      heygen_video_id: result.sessionId,
       r2_object_key,
       video_file_size_bytes,
       video_gen_status: 'success',
     };
+  }
 
-  } else {
-    // ── Classic mode ────────────────────────────────────────────────────────
+  // ── CUSTOM SCRIPT MODE ─────────────────────────────────────────────────
+  // User provided a verbatim script — skip news fetch and OpenAI entirely.
+  if (contentSource === 'custom_script') {
+    const scriptText = ctx.heygen_custom_script || ctx.script_text || '';
+    if (!scriptText) {
+      throw new Error('custom_script mode requires heygen_custom_script to be set');
+    }
+
     const avatarId    = ctx.heygen_avatar_id  || '';
     const videoLanguage = ctx.video_language  || 'English';
-    const scriptText  = ctx.script_text       || '';
 
     videoId = await submitHeyGenVideo(
       { apiKey, avatarId, voiceId, videoLanguage, scriptText, engine, resolution, aspectRatio, motionPrompt },
@@ -544,6 +546,32 @@ async function runVideoGenerator(ctx, httpPost, httpGet, r2Put) {
       video_gen_status: 'success',
     };
   }
+
+  // ── CLASSIC / OPENAI MODE (default) ────────────────────────────────────
+  // script_text is populated by the Script_Generator n8n node before this runs
+  const avatarId    = ctx.heygen_avatar_id  || '';
+  const videoLanguage = ctx.video_language  || 'English';
+  const scriptText  = ctx.script_text       || '';
+
+  videoId = await submitHeyGenVideo(
+    { apiKey, avatarId, voiceId, videoLanguage, scriptText, engine, resolution, aspectRatio, motionPrompt },
+    httpPost
+  );
+
+  const videoUrl = await pollHeyGenStatus(videoId, apiKey, 60, httpGet);
+
+  const { r2_object_key, video_file_size_bytes } = await uploadToR2(
+    videoUrl, r2Config,
+    { user_id: ctx.user_id, pipeline_id: ctx.pipeline_id, execution_id: ctx.execution_id },
+    httpGet, r2Put
+  );
+
+  return {
+    heygen_video_id: videoId,
+    r2_object_key,
+    video_file_size_bytes,
+    video_gen_status: 'success',
+  };
 }
 
 /**

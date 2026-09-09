@@ -13,17 +13,20 @@ interface CreatePipelineBody {
   schedule_time_hhmm: string;
   schedule_timezone: string;
   schedule_days_of_week?: number[];
+  // Content source — the primary discriminator
+  content_source?: string; // 'openai' | 'agent' | 'custom_script' | 'drive'
+  heygen_custom_script?: string;
   // AI / content config
   openai_model?: string;
   heygen_avatar_id?: string;
-  heygen_engine?: string;           // 'avatar_v' | 'avatar_iv' | 'avatar_iii'
-  heygen_mode?: string;             // 'classic' | 'agent'
+  heygen_engine?: string;
+  heygen_mode?: string;
   heygen_voice_id?: string;
-  heygen_resolution?: string;       // '1080p' | '720p' | '4k'
-  heygen_aspect_ratio?: string;     // '9:16' | '16:9' | '1:1' | '4:5'
+  heygen_resolution?: string;
+  heygen_aspect_ratio?: string;
   heygen_motion_prompt?: string;
   heygen_agent_prompt?: string;
-  heygen_orientation?: string;      // 'portrait' | 'landscape'
+  heygen_orientation?: string;
   video_language?: string;
   script_tone?: string;
   target_duration_secs?: number;
@@ -91,6 +94,11 @@ export async function createPipelineRoute(app: FastifyInstance): Promise<void> {
               type: 'array',
               items: { type: 'number' },
             },
+            content_source: {
+              type: 'string',
+              enum: ['openai', 'agent', 'custom_script', 'drive'],
+            },
+            heygen_custom_script: { type: 'string', maxLength: 5000 },
             openai_model: { type: 'string' },
             heygen_avatar_id: { type: 'string' },
             heygen_engine: {
@@ -162,22 +170,26 @@ export async function createPipelineRoute(app: FastifyInstance): Promise<void> {
       }
 
       // ── Step 2: Check HeyGen API key (Req 6.6) ──────────────────────────
-      const { data: credential, error: credentialError } = await supabase
-        .from('credentials')
-        .select('id')
-        .eq('user_id', userId)
-        .eq('credential_type', 'heygen_api_key')
-        .eq('status', 'active')
-        .maybeSingle();
+      // Not required for drive-only pipelines
+      const contentSource = body.content_source ?? 'openai';
+      if (contentSource !== 'drive') {
+        const { data: credential, error: credentialError } = await supabase
+          .from('credentials')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('credential_type', 'heygen_api_key')
+          .eq('status', 'active')
+          .maybeSingle();
 
-      if (credentialError) {
-        throw AppError.internal('Failed to check credentials');
-      }
+        if (credentialError) {
+          throw AppError.internal('Failed to check credentials');
+        }
 
-      if (!credential) {
-        throw AppError.badRequest(
-          'HeyGen API key required. Add your key in Settings → Credentials before creating a pipeline.',
-        );
+        if (!credential) {
+          throw AppError.badRequest(
+            'HeyGen API key required. Add your key in Settings → Credentials before creating a pipeline.',
+          );
+        }
       }
 
       // ── Step 3: Compute UTC cron expression (Req 12.1, 12.2) ────────────
@@ -207,6 +219,8 @@ export async function createPipelineRoute(app: FastifyInstance): Promise<void> {
           schedule_timezone: body.schedule_timezone,
           schedule_days_of_week: body.schedule_days_of_week ?? null,
           schedule_cron_utc: cronExpression,
+          content_source: body.content_source ?? 'openai',
+          heygen_custom_script: body.heygen_custom_script ?? null,
           openai_model: body.openai_model ?? null,
           heygen_avatar_id: body.heygen_avatar_id ?? null,
           heygen_engine: body.heygen_engine ?? 'avatar_iv',

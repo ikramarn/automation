@@ -12,6 +12,8 @@ interface UpdatePipelineBody {
   schedule_time_hhmm?: string;
   schedule_timezone?: string;
   schedule_days_of_week?: number[];
+  content_source?: string;
+  heygen_custom_script?: string;
   openai_model?: string;
   heygen_avatar_id?: string;
   heygen_engine?: string;
@@ -72,6 +74,8 @@ export async function updatePipelineRoute(app: FastifyInstance): Promise<void> {
               type: 'array',
               items: { type: 'number' },
             },
+            content_source: { type: 'string', enum: ['openai', 'agent', 'custom_script', 'drive'] },
+            heygen_custom_script: { type: 'string', maxLength: 5000 },
             openai_model: { type: 'string' },
             heygen_avatar_id: { type: 'string' },
             heygen_engine: { type: 'string', enum: ['avatar_v', 'avatar_iv', 'avatar_iii'] },
@@ -121,6 +125,8 @@ export async function updatePipelineRoute(app: FastifyInstance): Promise<void> {
       if (body.name !== undefined) updates['name'] = body.name;
       if (body.niche_keyword !== undefined) updates['niche_keyword'] = body.niche_keyword;
       if (body.publishing_platforms !== undefined) updates['publishing_platforms'] = body.publishing_platforms;
+      if (body.content_source !== undefined)        updates['content_source']        = body.content_source;
+      if (body.heygen_custom_script !== undefined)   updates['heygen_custom_script']   = body.heygen_custom_script;
       if (body.openai_model !== undefined)       updates['openai_model']       = body.openai_model;
       if (body.heygen_avatar_id !== undefined)    updates['heygen_avatar_id']    = body.heygen_avatar_id;
       if (body.heygen_engine !== undefined)       updates['heygen_engine']       = body.heygen_engine;
