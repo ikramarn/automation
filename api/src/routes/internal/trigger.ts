@@ -74,7 +74,7 @@ export async function triggerPipelineRoute(app: FastifyInstance): Promise<void> 
         throw AppError.notFound('Pipeline');
       }
 
-      const p = pipeline as Record<string, unknown>;
+      const p = pipeline as unknown as Record<string, unknown>;
       const userId = p['user_id'] as string;
       const pipelineStatus = p['status'] as string;
 
