@@ -60,10 +60,15 @@ export function computeUtcCron(
     }
   }
 
-  // Use a fixed reference date (non-DST-ambiguous) to convert the local time to UTC.
-  // We use 2024-01-15 (a Monday in January — no DST complications for most zones).
-  // The date itself is irrelevant; only the UTC hours/minutes matter.
-  const localDateStr = `2024-01-15T${timeHHMM}:00`;
+  // Use today's date as the reference so DST is correctly accounted for.
+  // We need the actual current UTC offset for the timezone, not a fixed
+  // winter-time offset. Using a January date was wrong for DST zones like
+  // Europe/London (UTC+0 in Jan but UTC+1 in summer).
+  const today = new Date();
+  const yyyy = today.getUTCFullYear();
+  const mm = String(today.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(today.getUTCDate()).padStart(2, '0');
+  const localDateStr = `${yyyy}-${mm}-${dd}T${timeHHMM}:00`;
 
   let utcDate: Date;
   try {
