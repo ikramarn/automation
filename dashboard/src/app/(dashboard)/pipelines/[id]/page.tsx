@@ -2,17 +2,11 @@
 
 /**
  * Pipeline detail page — /pipelines/:id
- *
- * Shows pipeline metadata (name, status, schedule, niche keyword, platforms)
- * and a paginated execution history using useExecutionLogs for real-time
- * updates via Supabase Realtime.
- *
- * Requirements: 13.3, 13.5
  */
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, Component, type ReactNode } from "react";
 import useSWR from "swr";
 import { useExecutionLogs, type ExecutionLog } from "@/hooks/useExecutionLogs";
 
@@ -325,13 +319,58 @@ function ExecutionRow({ log }: { log: ExecutionLog }) {
 }
 
 // ---------------------------------------------------------------------------
+// Error boundary — catches any render-time JS errors on this page
+// ---------------------------------------------------------------------------
+
+interface ErrorBoundaryState { hasError: boolean; message: string }
+
+class PageErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryState> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false, message: "" };
+  }
+  static getDerivedStateFromError(err: unknown): ErrorBoundaryState {
+    return { hasError: true, message: err instanceof Error ? err.message : String(err) };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="container mx-auto max-w-3xl px-4 py-10">
+          <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700">
+            <p className="font-medium">Something went wrong loading this pipeline</p>
+            <p className="mt-1 text-red-600 font-mono text-xs">{this.state.message}</p>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-3 rounded-md bg-red-100 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-200"
+            >
+              Reload page
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
 export default function PipelineDetailPage() {
+  return (
+    <PageErrorBoundary>
+      <PipelineDetailPageInner />
+    </PageErrorBoundary>
+  );
+}
+
+function PipelineDetailPageInner() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
-  const pipelineId = params.id;
+  // params.id can be string | string[] in Next.js — normalise to string
+  const pipelineId = Array.isArray(params?.id) ? params.id[0] : params?.id;
 
   const [page, setPage] = useState(1);
 

@@ -86,7 +86,6 @@ export interface UseExecutionLogsReturn {
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
 async function fetchExecutionLogs(url: string): Promise<ExecutionLog[]> {
-  const { createClient } = await import("@/lib/supabase/client");
   const supabase = createClient();
   const { data: { session } } = await supabase.auth.getSession();
 
