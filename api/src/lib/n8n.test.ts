@@ -2,6 +2,10 @@
  * Tests for the n8n REST API client.
  *
  * All tests mock the global `fetch` to avoid real network calls.
+ *
+ * NOTE: N8N_API_URL must include the /api/v1 prefix to match production
+ * Docker env (N8N_API_URL=http://n8n:5678/api/v1). The lib functions no
+ * longer add /api/v1 themselves to avoid double-prefix bugs.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -40,8 +44,9 @@ describe('createN8nWorkflow', () => {
     vi.restoreAllMocks();
   });
 
-  it('calls POST /api/v1/workflows when N8N_API_URL is set', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678';
+  it('calls POST /workflows when N8N_API_URL is set', async () => {
+    // Production format: N8N_API_URL already contains /api/v1
+    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
     process.env['N8N_API_KEY'] = 'test-key';
 
     const mockFetch = makeFetchMock(200, { id: 'workflow-abc' });
@@ -54,7 +59,7 @@ describe('createN8nWorkflow', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
 
     const [url, options] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('http://n8n.internal:5678/workflows');
+    expect(url).toBe('http://n8n.internal:5678/api/v1/workflows');
     expect(options.method).toBe('POST');
     expect((options.headers as Record<string, string>)['X-N8N-API-KEY']).toBe('test-key');
 
@@ -71,7 +76,7 @@ describe('createN8nWorkflow', () => {
   });
 
   it('throws when the n8n API returns a non-OK status', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678';
+    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
     process.env['N8N_API_KEY'] = 'test-key';
 
     const mockFetch = makeFetchMock(500, { message: 'Internal Server Error' });
@@ -83,7 +88,7 @@ describe('createN8nWorkflow', () => {
   });
 
   it('throws when the response is missing an id field', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678';
+    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
 
     const mockFetch = makeFetchMock(200, { name: 'no-id-here' });
     vi.stubGlobal('fetch', mockFetch);
@@ -110,8 +115,9 @@ describe('triggerN8nWorkflow', () => {
     vi.restoreAllMocks();
   });
 
-  it('calls POST /api/v1/workflows/{id}/execute with credentials in execution data', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678';
+  it('calls POST /workflows/{id}/execute with credentials in execution data', async () => {
+    // Production format: N8N_API_URL already contains /api/v1
+    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
     process.env['N8N_API_KEY'] = 'test-key';
 
     const mockFetch = makeFetchMock(200, { data: { executionId: 42 } });
@@ -144,7 +150,7 @@ describe('triggerN8nWorkflow', () => {
   });
 
   it('handles executionId at top-level data.id path', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678';
+    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
 
     const mockFetch = makeFetchMock(200, { data: { id: 'exec-xyz' } });
     vi.stubGlobal('fetch', mockFetch);
@@ -154,7 +160,7 @@ describe('triggerN8nWorkflow', () => {
   });
 
   it('handles executionId at top-level response.id path', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678';
+    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
 
     const mockFetch = makeFetchMock(200, { id: 99 });
     vi.stubGlobal('fetch', mockFetch);
@@ -171,7 +177,7 @@ describe('triggerN8nWorkflow', () => {
   });
 
   it('throws when the n8n API returns a non-OK status', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678';
+    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
 
     const mockFetch = makeFetchMock(422, { message: 'Unprocessable' });
     vi.stubGlobal('fetch', mockFetch);
@@ -182,7 +188,7 @@ describe('triggerN8nWorkflow', () => {
   });
 
   it('throws when the response is missing an executionId', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678';
+    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
 
     const mockFetch = makeFetchMock(200, { someOtherField: 'x' });
     vi.stubGlobal('fetch', mockFetch);
@@ -209,8 +215,9 @@ describe('getN8nExecutionStatus', () => {
     vi.restoreAllMocks();
   });
 
-  it('calls GET /api/v1/executions/{id} and returns status', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678';
+  it('calls GET /executions/{id} and returns status', async () => {
+    // Production format: N8N_API_URL already contains /api/v1
+    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
     process.env['N8N_API_KEY'] = 'test-key';
 
     const mockPayload = { id: '42', status: 'success', data: { resultData: {} } };
@@ -238,7 +245,7 @@ describe('getN8nExecutionStatus', () => {
   });
 
   it('throws when the n8n API returns a non-OK status', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678';
+    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
 
     const mockFetch = makeFetchMock(404, { message: 'Execution not found' });
     vi.stubGlobal('fetch', mockFetch);
@@ -249,7 +256,7 @@ describe('getN8nExecutionStatus', () => {
   });
 
   it('throws when the response is missing a status field', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678';
+    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
 
     const mockFetch = makeFetchMock(200, { id: '42' });
     vi.stubGlobal('fetch', mockFetch);
@@ -260,7 +267,7 @@ describe('getN8nExecutionStatus', () => {
   });
 
   it('returns different execution statuses correctly', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678';
+    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
 
     for (const status of ['running', 'success', 'failed', 'waiting', 'canceled']) {
       const mockFetch = makeFetchMock(200, { id: '1', status });
@@ -272,7 +279,7 @@ describe('getN8nExecutionStatus', () => {
   });
 
   it('URL-encodes the executionId to prevent path injection', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678';
+    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
 
     const mockFetch = makeFetchMock(200, { id: 'tricky/id', status: 'success' });
     vi.stubGlobal('fetch', mockFetch);

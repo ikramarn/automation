@@ -217,7 +217,7 @@ export async function triggerN8nWorkflow(
   };
 
   const response = await fetch(
-    `${n8nApiUrl}/api/v1/workflows/${encodeURIComponent(workflowId)}/execute`,
+    `${n8nApiUrl}/workflows/${encodeURIComponent(workflowId)}/execute`,
     {
       method: 'POST',
       headers: {
@@ -271,7 +271,7 @@ export async function getN8nExecutionStatus(
   }
 
   const response = await fetch(
-    `${n8nApiUrl}/api/v1/executions/${encodeURIComponent(executionId)}`,
+    `${n8nApiUrl}/executions/${encodeURIComponent(executionId)}`,
     {
       method: 'GET',
       headers: {
