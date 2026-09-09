@@ -52,6 +52,10 @@ services:
   n8n:
     restart: always
 
+  # ── n8n Worker ───────────────────────────────────────────────────────────────
+  n8n-worker:
+    restart: always
+
   # ── Redis ────────────────────────────────────────────────────────────────────
   redis:
     restart: always

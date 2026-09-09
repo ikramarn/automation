@@ -147,6 +147,38 @@ services:
       retries: 3
       start_period: 20s
 
+  # ── n8n Worker — Processes queued pipeline executions ──────────────────────
+  # Required when EXECUTIONS_MODE=queue: the n8n main process handles webhooks
+  # and scheduling, but workers actually run the workflow nodes.
+  # Without at least one worker, queued executions never start.
+  n8n-worker:
+    image: n8nio/n8n:1.48.0
+    container_name: n8n-worker
+    restart: unless-stopped
+    command: worker
+    env_file:
+      - .env
+    environment:
+      N8N_HOST: "0.0.0.0"
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: "http"
+      EXECUTIONS_MODE: "queue"
+      QUEUE_BULL_REDIS_HOST: "redis"
+      QUEUE_BULL_REDIS_PORT: "6379"
+      EXECUTIONS_CONCURRENCY_LIMIT: "10"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_USER_FOLDER: "/home/node/.n8n"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - internal
+    depends_on:
+      redis:
+        condition: service_healthy
+      n8n:
+        condition: service_healthy
+
   # ── Redis — n8n Execution Queue ─────────────────────────────────────────────
   redis:
     image: redis:7.2.5-alpine
