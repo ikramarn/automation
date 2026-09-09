@@ -65,6 +65,9 @@ export async function createN8nWorkflow(
     return `n8n-placeholder-${pipelineId}`;
   }
 
+  const internalApiUrl = process.env['API_URL'] ?? process.env['APP_URL'] ?? '';
+  const serviceToken = process.env['N8N_SERVICE_TOKEN'] ?? '';
+
   const workflowPayload: N8nWorkflowPayload = {
     name: `pipeline-${pipelineId}`,
     nodes: [
@@ -85,8 +88,43 @@ export async function createN8nWorkflow(
           },
         },
       },
+      {
+        id: 'trigger-pipeline',
+        name: 'Trigger Pipeline',
+        type: 'n8n-nodes-base.httpRequest',
+        typeVersion: 4.2,
+        position: [240, 0],
+        parameters: {
+          method: 'POST',
+          url: `${internalApiUrl}/internal/trigger-pipeline`,
+          sendHeaders: true,
+          headerParameters: {
+            parameters: [
+              { name: 'Content-Type', value: 'application/json' },
+              { name: 'X-Service-Token', value: serviceToken },
+            ],
+          },
+          sendBody: true,
+          contentType: 'json',
+          body: {
+            pipeline_id: pipelineId,
+          },
+          options: {
+            response: {
+              response: {
+                neverError: true,
+              },
+            },
+          },
+        },
+        continueOnFail: true,
+      },
     ],
-    connections: {},
+    connections: {
+      'Schedule Trigger': {
+        main: [[{ node: 'Trigger Pipeline', type: 'main', index: 0 }]],
+      },
+    },
     settings: {
       executionOrder: 'v1',
     },
