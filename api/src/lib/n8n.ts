@@ -101,7 +101,7 @@ export async function createN8nWorkflow(
           headerParameters: {
             parameters: [
               { name: 'Content-Type', value: 'application/json' },
-              { name: 'X-Service-Token', value: serviceToken },
+              { name: 'Authorization', value: `Bearer ${serviceToken}` },
             ],
           },
           sendBody: true,
