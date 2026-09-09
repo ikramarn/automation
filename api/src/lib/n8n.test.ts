@@ -115,19 +115,19 @@ describe('triggerN8nWorkflow', () => {
     vi.restoreAllMocks();
   });
 
-  it('calls POST /workflows/{id}/execute with credentials in execution data', async () => {
+  it('calls POST /webhook/trigger-pipeline with credentials in body', async () => {
     // Production format: N8N_API_URL already contains /api/v1
     process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
     process.env['N8N_API_KEY'] = 'test-key';
+    process.env['API_URL'] = 'https://automatesocials.tech/api';
 
-    const mockFetch = makeFetchMock(200, { data: { executionId: 42 } });
+    const mockFetch = makeFetchMock(200, { executionId: 42 });
     vi.stubGlobal('fetch', mockFetch);
 
     const credentials = { heygen_api_key: 'hg-secret', openai_api_key: 'oai-secret' };
     const pipelineConfig = {
       pipeline_id: 'pipe-1',
       user_id: 'user-1',
-      execution_id: 'exec-1',
       niche_keyword: 'AI technology',
     };
 
@@ -137,16 +137,20 @@ describe('triggerN8nWorkflow', () => {
     expect(mockFetch).toHaveBeenCalledOnce();
 
     const [url, options] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('http://n8n.internal:5678/api/v1/workflows/wf-abc/execute');
+    // Webhook URL — strips /api/v1 from N8N_API_URL base
+    expect(url).toBe('http://n8n.internal:5678/webhook/trigger-pipeline');
     expect(options.method).toBe('POST');
-    expect((options.headers as Record<string, string>)['X-N8N-API-KEY']).toBe('test-key');
+    // No API key needed for webhook (it's a public webhook endpoint)
+    expect((options.headers as Record<string, string>)['Content-Type']).toBe('application/json');
 
     const body = JSON.parse(options.body as string) as {
-      inputData: { body: { credentials: Record<string, string>; pipelineConfig: Record<string, unknown> } };
+      credentials: Record<string, string>;
+      pipelineConfig: Record<string, unknown>;
     };
     // Credentials must be in the body payload (never stored in n8n credential DB)
-    expect(body.inputData.body.credentials).toEqual(credentials);
-    expect(body.inputData.body.pipelineConfig).toEqual(pipelineConfig);
+    expect(body.credentials).toEqual(credentials);
+    expect(body.pipelineConfig.pipeline_id).toBe('pipe-1');
+    expect(body.pipelineConfig.internal_api_url).toBe('https://automatesocials.tech/api');
   });
 
   it('handles executionId at top-level data.id path', async () => {
@@ -169,6 +173,17 @@ describe('triggerN8nWorkflow', () => {
     expect(result.executionId).toBe('99');
   });
 
+  it('uses timestamp fallback when response has no executionId', async () => {
+    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
+
+    const mockFetch = makeFetchMock(200, { someOtherField: 'x' });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const result = await triggerN8nWorkflow('wf-abc', {}, {});
+    // Should not throw — uses timestamp fallback
+    expect(result.executionId).toMatch(/^webhook-triggered-\d+$/);
+  });
+
   it('returns a placeholder execution ID when N8N_API_URL is not set', async () => {
     delete process.env['N8N_API_URL'];
 
@@ -176,26 +191,27 @@ describe('triggerN8nWorkflow', () => {
     expect(result.executionId).toBe('n8n-exec-placeholder-pipe-X');
   });
 
-  it('throws when the n8n API returns a non-OK status', async () => {
+  it('throws when the n8n webhook returns a non-OK status', async () => {
     process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
 
-    const mockFetch = makeFetchMock(422, { message: 'Unprocessable' });
+    const mockFetch = makeFetchMock(500, { message: 'Internal Server Error' });
     vi.stubGlobal('fetch', mockFetch);
 
     await expect(
       triggerN8nWorkflow('wf-abc', {}, {}),
-    ).rejects.toThrow('n8n workflow execution trigger failed: HTTP 422');
+    ).rejects.toThrow('n8n workflow execution trigger failed: HTTP 500');
   });
 
-  it('throws when the response is missing an executionId', async () => {
-    process.env['N8N_API_URL'] = 'http://n8n.internal:5678/api/v1';
+  it('correctly strips /api/v1 suffix to derive webhook base URL', async () => {
+    process.env['N8N_API_URL'] = 'http://n8n:5678/api/v1';
 
-    const mockFetch = makeFetchMock(200, { someOtherField: 'x' });
+    const mockFetch = makeFetchMock(200, { id: 1 });
     vi.stubGlobal('fetch', mockFetch);
 
-    await expect(
-      triggerN8nWorkflow('wf-abc', {}, {}),
-    ).rejects.toThrow('n8n workflow execution response missing executionId');
+    await triggerN8nWorkflow('any', {}, {});
+
+    const [url] = mockFetch.mock.calls[0] as [string];
+    expect(url).toBe('http://n8n:5678/webhook/trigger-pipeline');
   });
 });
 

@@ -173,16 +173,24 @@ export async function createN8nWorkflow(
 /**
  * Triggers an execution of the video-automation-pipeline workflow in n8n.
  *
- * Credentials are passed as execution data in the request body and are
- * processed in-memory by n8n only — they are never written to n8n's
- * persistent database or logs.
+ * n8n 1.x does not expose a REST /execute endpoint. Instead, workflows are
+ * triggered via their Webhook node URL. The "My workflow" automation engine
+ * listens on POST /webhook/trigger-pipeline and expects:
+ *   { credentials: {...}, pipelineConfig: {...} }
  *
- * @param workflowId - The n8n workflow ID to execute
+ * The workflowId parameter is kept for API compatibility but is not used in
+ * the HTTP call — all pipelines funnel through the single automation engine
+ * workflow (tqs6G4wSCDWFkiwd) via the shared webhook path.
+ *
+ * Credentials are passed in the request body and are processed in-memory by
+ * n8n only — they are never written to n8n's persistent database or logs.
+ *
+ * @param workflowId - The n8n workflow ID (unused in call, kept for compat)
  * @param credentials - Map of credential name → value (heygen_api_key, etc.)
- * @param pipelineConfig - Pipeline configuration including pipeline_id, user_id, execution_id, etc.
+ * @param pipelineConfig - Pipeline configuration including pipeline_id, user_id, etc.
  * @returns Object containing the n8n execution ID
  *
- * @throws Error if the n8n API call fails (only when N8N_API_URL is set)
+ * @throws Error if the n8n webhook call fails (only when N8N_API_URL is set)
  */
 export async function triggerN8nWorkflow(
   workflowId: string,
@@ -190,41 +198,36 @@ export async function triggerN8nWorkflow(
   pipelineConfig: Record<string, unknown>,
 ): Promise<{ executionId: string }> {
   const n8nApiUrl = process.env['N8N_API_URL'];
-  const n8nApiKey = process.env['N8N_API_KEY'];
 
   // Graceful degradation: return placeholder when n8n is not configured
   if (!n8nApiUrl) {
     return { executionId: `n8n-exec-placeholder-${String(pipelineConfig['pipeline_id'] ?? 'unknown')}` };
   }
 
-  // Credentials are passed as execution data — never stored in n8n credential DB
-  const executionData = {
-    workflowData: {
-      // Execution input data is passed via the webhook trigger body in the workflow.
-      // The /execute endpoint injects this as the workflow's input payload.
-    },
-    runData: {},
-    startNodes: [],
-    destinationNode: '',
-    // Pass credentials + pipeline config as the workflow's input data.
-    // The Webhook/Trigger node in the workflow reads body.credentials and body.pipelineConfig.
-    inputData: {
-      body: {
-        credentials,
-        pipelineConfig,
-      },
+  // Derive the webhook base URL from N8N_API_URL.
+  // N8N_API_URL = http://n8n:5678/api/v1  → webhook base = http://n8n:5678
+  const webhookBase = n8nApiUrl.replace(/\/api\/v1\/?$/, '');
+
+  // POST to the webhook node of the "My workflow" automation engine.
+  // The webhook path "trigger-pipeline" is fixed in the n8n workflow definition.
+  // Credentials and pipeline config are passed in the body — never stored by n8n.
+  const webhookPayload = {
+    credentials,
+    pipelineConfig: {
+      ...pipelineConfig,
+      // Pass internal API URL so n8n can call back for execution log updates
+      internal_api_url: process.env['API_URL'] ?? '',
     },
   };
 
   const response = await fetch(
-    `${n8nApiUrl}/workflows/${encodeURIComponent(workflowId)}/execute`,
+    `${webhookBase}/webhook/trigger-pipeline`,
     {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-N8N-API-KEY': n8nApiKey ?? '',
       },
-      body: JSON.stringify(executionData),
+      body: JSON.stringify(webhookPayload),
     },
   );
 
@@ -237,18 +240,20 @@ export async function triggerN8nWorkflow(
 
   const data = (await response.json()) as N8nExecuteResponse;
 
-  // n8n returns executionId at various paths depending on version
+  // n8n webhook response returns executionId at various paths depending on version
   const rawId =
     data?.data?.executionId ??
     data?.data?.id ??
     data?.executionId ??
     data?.id;
 
-  if (rawId === undefined || rawId === null) {
-    throw new Error('n8n workflow execution response missing executionId');
-  }
+  // If no executionId returned (n8n responded but didn't include one), use a
+  // timestamp-based fallback so the execution log can still be created.
+  const executionId = rawId !== undefined && rawId !== null
+    ? String(rawId)
+    : `webhook-triggered-${Date.now()}`;
 
-  return { executionId: String(rawId) };
+  return { executionId };
 }
 
 /**
