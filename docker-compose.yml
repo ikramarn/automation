@@ -120,21 +120,20 @@ services:
       # Disable the n8n built-in basic auth; service-token auth is enforced
       # by the Backend API before it calls n8n.
       N8N_BASIC_AUTH_ACTIVE: "false"
-      # Run executions via Redis queue (required for concurrency control)
-      EXECUTIONS_MODE: "queue"
-      QUEUE_BULL_REDIS_HOST: "redis"
-      QUEUE_BULL_REDIS_PORT: "6379"
+      # Use regular (in-process) execution mode — no separate worker needed
+      # for a single-server setup. Queue mode requires a worker container
+      # consuming from Redis; regular mode runs executions in the same process.
+      EXECUTIONS_MODE: "regular"
       # Limit max concurrent pipeline executions (Req 19.6)
       EXECUTIONS_CONCURRENCY_LIMIT: "10"
       # Disable n8n telemetry in self-hosted setup
       N8N_DIAGNOSTICS_ENABLED: "false"
       N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "false"
       # Workflow source — load from mounted volume
       N8N_USER_FOLDER: "/home/node/.n8n"
     volumes:
       - n8n_data:/home/node/.n8n
-      # Mount workflow JSON files for version control
-      - ./n8n/workflows:/home/node/.n8n/workflows:ro
     networks:
       - internal                    # Must never be reachable from the public network
     depends_on:
@@ -146,39 +145,11 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-
-  # ── n8n Worker — Processes queued pipeline executions ──────────────────────
-  # Required when EXECUTIONS_MODE=queue: the n8n main process handles webhooks
-  # and scheduling, but workers actually run the workflow nodes.
-  # Without at least one worker, queued executions never start.
-  n8n-worker:
-    image: n8nio/n8n:1.48.0
-    container_name: n8n-worker
-    restart: unless-stopped
-    command: worker
-    env_file:
-      - .env
-    environment:
-      N8N_HOST: "0.0.0.0"
-      N8N_PORT: "5678"
-      N8N_PROTOCOL: "http"
-      EXECUTIONS_MODE: "queue"
-      QUEUE_BULL_REDIS_HOST: "redis"
-      QUEUE_BULL_REDIS_PORT: "6379"
-      EXECUTIONS_CONCURRENCY_LIMIT: "10"
-      N8N_DIAGNOSTICS_ENABLED: "false"
-      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
       N8N_USER_FOLDER: "/home/node/.n8n"
     volumes:
       - n8n_data:/home/node/.n8n
     networks:
       - internal
-    depends_on:
-      redis:
-        condition: service_healthy
-      n8n:
-        condition: service_healthy
-
   # ── Redis — n8n Execution Queue ─────────────────────────────────────────────
   redis:
     image: redis:7.2.5-alpine
