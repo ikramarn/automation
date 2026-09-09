@@ -43,9 +43,15 @@ interface Pipeline {
 // ---------------------------------------------------------------------------
 
 async function fetchPipeline(url: string): Promise<Pipeline> {
+  const supabase = (await import("@/lib/supabase/client")).createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+
   const res = await fetch(url, {
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+    },
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -213,12 +219,17 @@ function ToggleButtons({ pipelineId, status, onSuccess }: ToggleButtonsProps) {
       setError(null);
       try {
         const csrfToken = await fetchCsrfToken();
+        const { createClient } = await import("@/lib/supabase/client");
+        const supabase = createClient();
+        const { data: { session } } = await supabase.auth.getSession();
+
         const res = await fetch(`${API_BASE}/pipelines/${pipelineId}/${action}`, {
           method: "POST",
           credentials: "include",
           headers: {
             "Content-Type": "application/json",
             "X-CSRF-Token": csrfToken,
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
           },
         });
         if (!res.ok) {

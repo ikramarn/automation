@@ -86,9 +86,16 @@ export interface UseExecutionLogsReturn {
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
 async function fetchExecutionLogs(url: string): Promise<ExecutionLog[]> {
+  const { createClient } = await import("@/lib/supabase/client");
+  const supabase = createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+
   const res = await fetch(url, {
-    credentials: "include", // send HttpOnly session cookie
-    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+    },
   });
 
   if (!res.ok) {
@@ -116,11 +123,14 @@ export function useExecutionLogs(
     swrKey,
     fetchExecutionLogs,
     {
-      // Refresh every 10 seconds as a fallback in case Realtime misses an event
-      // (Req 13.5 — execution status polling every 10s)
       refreshInterval: 10_000,
-      // Keep stale data visible while revalidating for a smooth UX
-      revalidateOnFocus: true,
+      revalidateOnFocus: false,
+      // Don't infinite-retry on auth errors — they won't self-heal
+      onErrorRetry: (err, _key, _config, revalidate, { retryCount }) => {
+        if (err?.message?.includes("401") || err?.message?.includes("Unauthorized")) return;
+        if (retryCount >= 3) return;
+        setTimeout(() => revalidate({ retryCount }), 5000);
+      },
     }
   );
 

@@ -79,12 +79,17 @@ async function savePreferences(
   prefs: NotificationPreferences
 ): Promise<void> {
   const csrfToken = await fetchCsrfToken();
+  const { createClient } = await import("@/lib/supabase/client");
+  const supabase = createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+
   const res = await fetch(`${API_BASE}/account/notifications`, {
     method: "PUT",
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
       "X-CSRF-Token": csrfToken,
+      ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
     },
     body: JSON.stringify(prefs),
   });

@@ -63,9 +63,16 @@ interface ExecutionDetail {
 // ---------------------------------------------------------------------------
 
 async function fetchExecution(url: string): Promise<ExecutionDetail> {
+  const { createClient } = await import("@/lib/supabase/client");
+  const supabase = createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+
   const res = await fetch(url, {
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+    },
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
