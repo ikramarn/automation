@@ -205,12 +205,42 @@ export async function executePipeline(
     );
   }
 
-  // ── Step 4: Trigger the n8n automation workflow ─────────────────────────
+  // ── Step 4: Create the execution_logs row up front ───────────────────────
+  //
+  // The n8n workflow needs an execution_id to attach step results to via
+  // POST /internal/execution-log/update at the end of the run. Rather than
+  // have n8n call back to create this row (the workflow's Initialize_Log
+  // node attempts this but there is no matching API endpoint to receive it),
+  // the API creates the row itself before triggering n8n and passes the
+  // generated id through — a single source of truth, created exactly once,
+  // guaranteed to exist before n8n ever runs.
+  const { data: execLog, error: execLogError } = await supabase
+    .from('execution_logs')
+    .insert({
+      pipeline_id: pipelineId,
+      user_id: userId,
+      status: 'running',
+    })
+    .select('id')
+    .single();
+
+  if (execLogError || !execLog) {
+    logger.error?.(
+      { pipelineId, err: execLogError?.message },
+      '[executePipeline] Failed to create execution_logs row',
+    );
+    return { outcome: 'error', error: execLogError };
+  }
+
+  const executionId = (execLog as { id: string }).id;
+
+  // ── Step 5: Trigger the n8n automation workflow ─────────────────────────
 
   const workflowId = (p['n8n_workflow_id'] as string | null) ?? pipelineId;
   const pipelineConfig: Record<string, unknown> = {
     pipeline_id: pipelineId,
     user_id: userId,
+    execution_id: executionId,
     pipeline_name: p['name'],
     niche_keyword: p['niche_keyword'],
     publishing_platforms: p['publishing_platforms'],
@@ -238,15 +268,32 @@ export async function executePipeline(
   };
 
   try {
-    const { executionId } = await triggerN8nWorkflow(workflowId, credentials, pipelineConfig);
+    await triggerN8nWorkflow(workflowId, credentials, pipelineConfig);
     logger.info?.(
       { pipelineId, executionId },
       '[executePipeline] Pipeline execution triggered',
     );
     return { outcome: 'triggered', executionId };
   } catch (err) {
+    // The execution_logs row already exists (status: 'running') — mark it
+    // failed rather than leaving it stuck in 'running' forever, since n8n
+    // was never successfully called and will never send an update.
+    try {
+      await supabase
+        .from('execution_logs')
+        .update({
+          status: 'failed',
+          ended_at: new Date().toISOString(),
+          failure_reason: `Failed to trigger n8n workflow: ${err instanceof Error ? err.message : String(err)}`,
+        })
+        .eq('id', executionId);
+    } catch {
+      // Best-effort — if this also fails, the row stays 'running' and
+      // will show up as a stale/stuck execution for manual investigation.
+    }
+
     logger.error?.(
-      { pipelineId, workflowId, err },
+      { pipelineId, workflowId, executionId, err },
       '[executePipeline] Failed to trigger n8n workflow',
     );
     return { outcome: 'error', error: err };

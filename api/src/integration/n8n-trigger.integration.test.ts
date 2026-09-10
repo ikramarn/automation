@@ -268,6 +268,8 @@ describe('Test 1 — POST /pipelines: creates pipeline with no n8n workflow obje
 
 describe('Test 2 — POST /internal/trigger-pipeline: active pipeline, active subscription calls triggerN8nWorkflow', () => {
   it('returns 200 with executionId and calls triggerN8nWorkflow', async () => {
+    let executionLogsCallCount = 0;
+
     mockFrom.mockImplementation((table: string) => {
       if (table === 'pipelines') {
         return buildChain({ data: samplePipeline, error: null });
@@ -276,8 +278,19 @@ describe('Test 2 — POST /internal/trigger-pipeline: active pipeline, active su
         return buildChain({ data: { subscription_status: 'active' }, error: null });
       }
       if (table === 'execution_logs') {
-        // No execution currently running
-        return buildChain({ data: null, error: null });
+        executionLogsCallCount++;
+        if (executionLogsCallCount === 1) {
+          // Running-execution check — none running
+          return buildChain({ data: null, error: null });
+        }
+        // Create the execution_logs row — returns the generated id
+        return {
+          insert: vi.fn().mockReturnValue({
+            select: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({ data: { id: 'exec-generated-id' }, error: null }),
+            }),
+          }),
+        };
       }
       if (table === 'credentials') {
         // Return chained eq().eq() for the credential query
@@ -309,13 +322,15 @@ describe('Test 2 — POST /internal/trigger-pipeline: active pipeline, active su
 
     expect(response.statusCode).toBe(200);
     const body = response.json<{ executionId: string; message: string }>();
-    expect(body.executionId).toBe('exec-integration-456');
+    // executionId now comes from the execution_logs row created up front,
+    // not from triggerN8nWorkflow's mocked return value.
+    expect(body.executionId).toBe('exec-generated-id');
 
     expect(mockTriggerN8nWorkflow).toHaveBeenCalledOnce();
     expect(mockTriggerN8nWorkflow).toHaveBeenCalledWith(
       PIPELINE_ID, // workflowId falls back to pipelineId when n8n_workflow_id is null
       expect.objectContaining({ heygen_api_key: 'decrypted-api-key' }),
-      expect.objectContaining({ pipeline_id: PIPELINE_ID }),
+      expect.objectContaining({ pipeline_id: PIPELINE_ID, execution_id: 'exec-generated-id' }),
     );
   });
 });

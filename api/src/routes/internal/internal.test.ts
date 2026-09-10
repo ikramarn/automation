@@ -673,6 +673,8 @@ describe('POST /internal/trigger-pipeline', () => {
   });
 
   it('active pipeline + active subscription → triggers n8n and returns executionId', async () => {
+    let executionLogsCallCount = 0;
+
     // credentials query returns active rows
     vi.mocked(createSupabaseAdminClient).mockReturnValue({
       from: vi.fn((table: string) => {
@@ -696,12 +698,23 @@ describe('POST /internal/trigger-pipeline', () => {
           };
         }
         if (table === 'execution_logs') {
-          // No execution currently running
+          executionLogsCallCount++;
+          if (executionLogsCallCount === 1) {
+            // Running-execution check — none running
+            return {
+              select: vi.fn().mockReturnThis(),
+              eq: vi.fn().mockReturnThis(),
+              limit: vi.fn().mockReturnThis(),
+              maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+            };
+          }
+          // Create the execution_logs row — returns the generated id
           return {
-            select: vi.fn().mockReturnThis(),
-            eq: vi.fn().mockReturnThis(),
-            limit: vi.fn().mockReturnThis(),
-            maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+            insert: vi.fn().mockReturnValue({
+              select: vi.fn().mockReturnValue({
+                single: vi.fn().mockResolvedValue({ data: { id: 'exec-generated-id' }, error: null }),
+              }),
+            }),
           };
         }
         if (table === 'user_profiles') {
@@ -739,11 +752,13 @@ describe('POST /internal/trigger-pipeline', () => {
 
     expect(res.statusCode).toBe(200);
     const body = res.json<{ executionId: string; message: string }>();
-    expect(body.executionId).toBe('exec-123');
+    // executionId now comes from the execution_logs row created up front,
+    // not from triggerN8nWorkflow's mocked return value ('exec-123').
+    expect(body.executionId).toBe('exec-generated-id');
     expect(vi.mocked(triggerN8nWorkflow)).toHaveBeenCalledWith(
       'wf-abc',
       expect.objectContaining({ heygen_api_key: 'decrypted-api-key' }),
-      expect.objectContaining({ pipeline_id: 'pipe-1' }),
+      expect.objectContaining({ pipeline_id: 'pipe-1', execution_id: 'exec-generated-id' }),
     );
   });
 
@@ -789,7 +804,25 @@ describe('POST /internal/trigger-pipeline', () => {
             }),
           };
         }
-        // execution_logs (running-check) and any other table
+        if (table === 'execution_logs') {
+          // Running-check (maybeSingle), create-row (insert().select().single()),
+          // and the post-failure update (update().eq()) all hit this table.
+          // A single chainable mock that satisfies all three call shapes:
+          const chain: Record<string, unknown> = {};
+          chain['select'] = vi.fn().mockReturnValue(chain);
+          chain['eq'] = vi.fn().mockReturnValue(chain);
+          chain['limit'] = vi.fn().mockReturnValue(chain);
+          chain['maybeSingle'] = vi.fn().mockResolvedValue({ data: null, error: null });
+          chain['insert'] = vi.fn().mockReturnValue({
+            select: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({ data: { id: 'exec-generated-id' }, error: null }),
+            }),
+          });
+          chain['update'] = vi.fn().mockReturnValue({
+            eq: vi.fn().mockResolvedValue({ data: null, error: null }),
+          });
+          return chain;
+        }
         return {
           select: vi.fn().mockReturnThis(),
           eq: vi.fn().mockReturnThis(),
