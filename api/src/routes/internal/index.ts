@@ -4,6 +4,7 @@ import { triggerPipelineRoute } from './trigger.js';
 import { notifyRoute } from './notify.js';
 import { pipelinePausedRoute } from './pipeline-paused.js';
 import { executionLogUpdateRoute } from './execution-log-update.js';
+import { platformAuditStatusRoute } from './platform-audit-status.js';
 
 /**
  * Internal routes plugin.
@@ -20,8 +21,9 @@ import { executionLogUpdateRoute } from './execution-log-update.js';
  *   POST /internal/notify                  — dispatch transactional email
  *   POST /internal/pipeline-paused         — mark pipeline paused + notify user
  *   POST /internal/execution-log/update    — finalize execution_logs record
+ *   GET  /internal/platform-audit-status/:platform — Ayrshare vs. direct API routing flag
  *
- * Requirements: 3.7, 10.6, 12.8, 14.1, 14.2, 14.3, 14.4, 15.5, 18.5
+ * Requirements: 3.7, 5.9, 5.10, 10.6, 12.8, 14.1, 14.2, 14.3, 14.4, 15.5, 18.5
  */
 export async function internalRoutes(app: FastifyInstance): Promise<void> {
   // All internal routes require a valid service token
@@ -31,4 +33,5 @@ export async function internalRoutes(app: FastifyInstance): Promise<void> {
   await app.register(notifyRoute);
   await app.register(pipelinePausedRoute);
   await app.register(executionLogUpdateRoute);
+  await app.register(platformAuditStatusRoute);
 }
