@@ -323,7 +323,14 @@ export async function socialOAuthPublicRoutes(app: FastifyInstance): Promise<voi
 
       let userId: string;
       try {
-        const decoded = app.jwt.verify<{ sub: string }>(token);
+        // Use the same verifyJwt decorator the authenticate middleware uses
+        // (registered by plugins/jwt.ts). Supabase migrated from a shared
+        // HS256 secret to asymmetric JWKS-based signing keys — calling
+        // app.jwt.verify() directly only understands the legacy HS256
+        // secret, so it rejects every real (JWKS-signed) token as invalid.
+        // This caused YouTube/TikTok/Facebook/Instagram "Connect" to always
+        // fail with "Invalid or expired token", even for a fresh session.
+        const decoded = await (app as unknown as { verifyJwt: (t: string) => Promise<{ sub: string }> }).verifyJwt(token);
         userId = decoded.sub;
       } catch {
         throw new AppError(401, 'unauthorized', 'Invalid or expired token');
