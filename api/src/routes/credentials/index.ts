@@ -6,6 +6,7 @@ import { upsertCredentialRoute } from './upsert.js';
 import { deleteCredentialRoute } from './delete.js';
 import { googleDrivePublicRoutes, googleDriveProtectedRoutes } from './google-drive.js';
 import { socialOAuthPublicRoutes, socialOAuthProtectedRoutes } from './social-oauth.js';
+import { heygenAssetsRoutes } from './heygen-assets.js';
 
 /**
  * Credentials routes plugin.
@@ -27,6 +28,8 @@ import { socialOAuthPublicRoutes, socialOAuthProtectedRoutes } from './social-oa
  *    DELETE /credentials/:type                      — delete a credential
  *    DELETE /credentials/google                     — disconnect Google Drive
  *    DELETE /credentials/social/:platform           — disconnect social platform
+ *    GET    /credentials/heygen/avatars             — list HeyGen avatars (for picker)
+ *    GET    /credentials/heygen/voices              — list HeyGen voices (for picker)
  *
  * The OAuth connect/callback routes MUST be registered outside the
  * authenticated scope because the browser arrives at these URLs via a redirect
@@ -58,5 +61,6 @@ export async function credentialRoutes(app: FastifyInstance): Promise<void> {
     await protectedApp.register(deleteCredentialRoute);
     await protectedApp.register(googleDriveProtectedRoutes);
     await protectedApp.register(socialOAuthProtectedRoutes);
+    await protectedApp.register(heygenAssetsRoutes);
   });
 }

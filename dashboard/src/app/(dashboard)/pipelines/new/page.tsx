@@ -237,6 +237,293 @@ function Warn({ children }: { children: React.ReactNode }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// HeyGen avatar/voice picker — fetched from the user's own HeyGen account
+// ---------------------------------------------------------------------------
+
+interface HeyGenAvatar {
+  avatar_id: string;
+  name: string;
+  avatar_type: string;
+  group_id: string | null;
+  gender: string | null;
+  preview_image_url: string | null;
+  preview_video_url: string | null;
+  default_voice_id: string | null;
+  supported_api_engines: string[];
+}
+
+interface HeyGenVoice {
+  voice_id: string;
+  name: string;
+  language: string | null;
+  gender: string | null;
+  type: string;
+  preview_audio_url: string | null;
+}
+
+async function authedGet<T>(path: string): Promise<T | null> {
+  const { createClient } = await import("@/lib/supabase/client");
+  const supabase = createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+    },
+  });
+  if (!res.ok) return null;
+  return res.json() as Promise<T>;
+}
+
+/**
+ * Avatar picker: fetches the user's real HeyGen avatars (public presets +
+ * any private/trained looks) and renders them as a searchable thumbnail
+ * grid. Selecting one sets `heygen_avatar_id` (the HeyGen look id) and, if
+ * the voice field is still empty, pre-fills the avatar's default voice too.
+ *
+ * Falls back to a plain text input (the raw avatar_id) when the user has no
+ * HeyGen key connected yet, or if the HeyGen call fails for any reason —
+ * the pipeline can still be created with a manually-typed ID.
+ */
+function AvatarPicker({
+  form,
+  onChange,
+  hasHeyGen,
+}: {
+  form: FormState;
+  onChange: (field: keyof FormState, value: unknown) => void;
+  hasHeyGen: boolean;
+}) {
+  const [query, setQuery] = useState("");
+  const [manualMode, setManualMode] = useState(false);
+
+  const { data, isLoading, error } = useSWR<{ avatars: HeyGenAvatar[] }>(
+    hasHeyGen ? "/credentials/heygen/avatars" : null,
+    (path: string) => authedGet<{ avatars: HeyGenAvatar[] }>(path),
+    { revalidateOnFocus: false },
+  );
+
+  const avatars = data?.avatars ?? [];
+  const filtered = query.trim()
+    ? avatars.filter(a => a.name.toLowerCase().includes(query.trim().toLowerCase()))
+    : avatars;
+
+  const selected = avatars.find(a => a.avatar_id === form.heygen_avatar_id);
+
+  function selectAvatar(a: HeyGenAvatar) {
+    onChange("heygen_avatar_id", a.avatar_id);
+    if (!form.heygen_voice_id.trim() && a.default_voice_id) {
+      onChange("heygen_voice_id", a.default_voice_id);
+    }
+  }
+
+  if (!hasHeyGen || manualMode || error) {
+    return (
+      <div>
+        <label htmlFor="hav-id" className="mb-1 block text-sm font-medium text-gray-700">
+          Avatar ID <span className="text-xs font-normal text-gray-400">(optional)</span>
+        </label>
+        <input id="hav-id" type="text" value={form.heygen_avatar_id}
+          onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("heygen_avatar_id", e.target.value)}
+          placeholder="e.g. avatar_abc123"
+          className="block w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+        />
+        <p className="mt-1 text-xs text-gray-400">
+          {hasHeyGen ? "HeyGen → Avatars → look ID. Blank = account default." : "Connect a HeyGen API key to browse avatars visually."}
+        </p>
+        {hasHeyGen && (
+          <button type="button" onClick={() => setManualMode(false)} className="mt-1 text-xs font-medium text-indigo-600 underline">
+            Browse avatars instead
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <label className="mb-1 block text-sm font-medium text-gray-700">
+        Avatar <span className="text-xs font-normal text-gray-400">(optional — blank = account default)</span>
+      </label>
+
+      <input type="text" value={query} onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
+        placeholder="Search avatars by name…"
+        className="mb-2 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+      />
+
+      {isLoading ? (
+        <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-4 text-sm text-gray-500">
+          <Spinner className="h-4 w-4" /> Loading avatars from HeyGen…
+        </div>
+      ) : (
+        <div className="grid max-h-72 grid-cols-3 gap-2 overflow-y-auto rounded-lg border border-gray-200 p-2 sm:grid-cols-4">
+          <button type="button" onClick={() => selectAvatar({ avatar_id: "", name: "", avatar_type: "", group_id: null, gender: null, preview_image_url: null, preview_video_url: null, default_voice_id: null, supported_api_engines: [] })}
+            className={`flex flex-col items-center gap-1 rounded-lg border-2 p-2 text-center transition-all ${
+              form.heygen_avatar_id === "" ? "border-indigo-500 bg-indigo-50" : "border-gray-200 bg-white hover:border-gray-300"
+            }`}
+          >
+            <div className="flex h-16 w-full items-center justify-center rounded bg-gray-100 text-xs text-gray-400">Default</div>
+            <span className="line-clamp-1 text-xs font-medium text-gray-700">Account default</span>
+          </button>
+
+          {filtered.map(a => (
+            <button key={a.avatar_id} type="button" onClick={() => selectAvatar(a)}
+              className={`flex flex-col items-center gap-1 rounded-lg border-2 p-2 text-center transition-all ${
+                form.heygen_avatar_id === a.avatar_id ? "border-indigo-500 bg-indigo-50" : "border-gray-200 bg-white hover:border-gray-300"
+              }`}
+            >
+              {a.preview_image_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={a.preview_image_url} alt={a.name} className="h-16 w-full rounded object-cover" />
+              ) : (
+                <div className="flex h-16 w-full items-center justify-center rounded bg-gray-100 text-xs text-gray-400">No preview</div>
+              )}
+              <span className="line-clamp-1 text-xs font-medium text-gray-700">{a.name}</span>
+            </button>
+          ))}
+
+          {!isLoading && filtered.length === 0 && (
+            <p className="col-span-full py-4 text-center text-xs text-gray-400">No avatars match &quot;{query}&quot;.</p>
+          )}
+        </div>
+      )}
+
+      {selected && (
+        <p className="mt-1.5 text-xs text-gray-500">
+          Selected: <strong>{selected.name}</strong>
+          {selected.supported_api_engines.length > 0 && ` · Engines: ${selected.supported_api_engines.join(", ")}`}
+        </p>
+      )}
+
+      <button type="button" onClick={() => setManualMode(true)} className="mt-1.5 text-xs font-medium text-indigo-600 underline">
+        Enter avatar ID manually instead
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Voice picker: same pattern as AvatarPicker, fetching the user's available
+ * HeyGen voices. Includes a play button to preview each voice's sample
+ * audio before selecting it.
+ */
+function VoicePicker({
+  form,
+  onChange,
+  hasHeyGen,
+}: {
+  form: FormState;
+  onChange: (field: keyof FormState, value: unknown) => void;
+  hasHeyGen: boolean;
+}) {
+  const [query, setQuery] = useState("");
+  const [manualMode, setManualMode] = useState(false);
+
+  const { data, isLoading, error } = useSWR<{ voices: HeyGenVoice[] }>(
+    hasHeyGen ? "/credentials/heygen/voices" : null,
+    (path: string) => authedGet<{ voices: HeyGenVoice[] }>(path),
+    { revalidateOnFocus: false },
+  );
+
+  const voices = data?.voices ?? [];
+  const filtered = query.trim()
+    ? voices.filter(v =>
+        v.name.toLowerCase().includes(query.trim().toLowerCase()) ||
+        (v.language ?? "").toLowerCase().includes(query.trim().toLowerCase()))
+    : voices;
+
+  const selected = voices.find(v => v.voice_id === form.heygen_voice_id);
+
+  if (!hasHeyGen || manualMode || error) {
+    return (
+      <div>
+        <label htmlFor="hvoice-id" className="mb-1 block text-sm font-medium text-gray-700">
+          Voice ID <span className="text-xs font-normal text-gray-400">(optional)</span>
+        </label>
+        <input id="hvoice-id" type="text" value={form.heygen_voice_id}
+          onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("heygen_voice_id", e.target.value)}
+          placeholder="e.g. voice_en_us_abc"
+          className="block w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+        />
+        <p className="mt-1 text-xs text-gray-400">
+          {hasHeyGen ? "Blank = avatar's default voice." : "Connect a HeyGen API key to browse voices."}
+        </p>
+        {hasHeyGen && (
+          <button type="button" onClick={() => setManualMode(false)} className="mt-1 text-xs font-medium text-indigo-600 underline">
+            Browse voices instead
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <label className="mb-1 block text-sm font-medium text-gray-700">
+        Voice <span className="text-xs font-normal text-gray-400">(optional — blank = avatar default)</span>
+      </label>
+
+      <input type="text" value={query} onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
+        placeholder="Search voices by name or language…"
+        className="mb-2 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+      />
+
+      {isLoading ? (
+        <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-4 text-sm text-gray-500">
+          <Spinner className="h-4 w-4" /> Loading voices from HeyGen…
+        </div>
+      ) : (
+        <div className="max-h-56 overflow-y-auto rounded-lg border border-gray-200">
+          <button type="button" onClick={() => onChange("heygen_voice_id", "")}
+            className={`flex w-full items-center justify-between gap-2 border-b border-gray-100 px-3 py-2 text-left text-sm transition-colors ${
+              form.heygen_voice_id === "" ? "bg-indigo-50 text-indigo-700" : "hover:bg-gray-50"
+            }`}
+          >
+            <span className="font-medium">Avatar default voice</span>
+          </button>
+
+          {filtered.map(v => (
+            <div key={v.voice_id}
+              className={`flex items-center justify-between gap-2 border-b border-gray-100 px-3 py-2 text-sm last:border-b-0 transition-colors ${
+                form.heygen_voice_id === v.voice_id ? "bg-indigo-50" : "hover:bg-gray-50"
+              }`}
+            >
+              <button type="button" onClick={() => onChange("heygen_voice_id", v.voice_id)} className="flex-1 text-left">
+                <span className="font-medium text-gray-900">{v.name}</span>
+                {v.language && <span className="ml-2 text-xs text-gray-400">{v.language}</span>}
+              </button>
+              {v.preview_audio_url && (
+                <button type="button"
+                  onClick={() => new Audio(v.preview_audio_url as string).play().catch(() => {})}
+                  aria-label={`Preview ${v.name}`}
+                  className="shrink-0 rounded-full p-1 text-gray-400 hover:bg-gray-100 hover:text-indigo-600"
+                >
+                  ▶
+                </button>
+              )}
+            </div>
+          ))}
+
+          {!isLoading && filtered.length === 0 && (
+            <p className="py-4 text-center text-xs text-gray-400">No voices match &quot;{query}&quot;.</p>
+          )}
+        </div>
+      )}
+
+      {selected && (
+        <p className="mt-1.5 text-xs text-gray-500">Selected: <strong>{selected.name}</strong>{selected.language ? ` (${selected.language})` : ""}</p>
+      )}
+
+      <button type="button" onClick={() => setManualMode(true)} className="mt-1.5 text-xs font-medium text-indigo-600 underline">
+        Enter voice ID manually instead
+      </button>
+    </div>
+  );
+}
+
 function Info({ children }: { children: React.ReactNode }) {
   return (
     <div className="mb-4 rounded-lg border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-700">
@@ -297,10 +584,12 @@ function HeyGenVideoSettings({
   form,
   onChange,
   showEngine = true,
+  hasHeyGen = false,
 }: {
   form: FormState;
   onChange: (field: keyof FormState, value: unknown) => void;
   showEngine?: boolean;
+  hasHeyGen?: boolean;
 }) {
   return (
     <>
@@ -336,28 +625,8 @@ function HeyGenVideoSettings({
 
       {/* Avatar + Voice */}
       <div className="mb-5 grid gap-4 sm:grid-cols-2">
-        <div>
-          <label htmlFor="hav-id" className="mb-1 block text-sm font-medium text-gray-700">
-            Avatar ID <span className="text-xs font-normal text-gray-400">(optional)</span>
-          </label>
-          <input id="hav-id" type="text" value={form.heygen_avatar_id}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("heygen_avatar_id", e.target.value)}
-            placeholder="e.g. avatar_abc123"
-            className="block w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-          />
-          <p className="mt-1 text-xs text-gray-400">HeyGen → Avatars → look ID. Blank = account default.</p>
-        </div>
-        <div>
-          <label htmlFor="hvoice-id" className="mb-1 block text-sm font-medium text-gray-700">
-            Voice ID <span className="text-xs font-normal text-gray-400">(optional)</span>
-          </label>
-          <input id="hvoice-id" type="text" value={form.heygen_voice_id}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("heygen_voice_id", e.target.value)}
-            placeholder="e.g. voice_en_us_abc"
-            className="block w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-          />
-          <p className="mt-1 text-xs text-gray-400">Blank = avatar&apos;s default voice.</p>
-        </div>
+        <AvatarPicker form={form} onChange={onChange} hasHeyGen={hasHeyGen} />
+        <VoicePicker form={form} onChange={onChange} hasHeyGen={hasHeyGen} />
       </div>
 
       {/* Resolution + Aspect ratio */}
@@ -637,7 +906,7 @@ function Step2Content({
             </div>
           </div>
 
-          <HeyGenVideoSettings form={form} onChange={onChange} />
+          <HeyGenVideoSettings form={form} onChange={onChange} hasHeyGen={credentials?.hasHeyGen ?? false} />
         </>
       )}
 
@@ -705,28 +974,10 @@ function Step2Content({
             </div>
           </div>
 
-          {/* Optional avatar/voice hint */}
+          {/* Optional avatar/voice preference — agent chooses if left blank */}
           <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label htmlFor="agent-av" className="mb-1 block text-sm font-medium text-gray-700">
-                Preferred avatar <span className="text-xs font-normal text-gray-400">(optional)</span>
-              </label>
-              <input id="agent-av" type="text" value={form.heygen_avatar_id}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("heygen_avatar_id", e.target.value)}
-                placeholder="Leave blank — agent chooses"
-                className="block w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-              />
-            </div>
-            <div>
-              <label htmlFor="agent-voice" className="mb-1 block text-sm font-medium text-gray-700">
-                Preferred voice <span className="text-xs font-normal text-gray-400">(optional)</span>
-              </label>
-              <input id="agent-voice" type="text" value={form.heygen_voice_id}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => onChange("heygen_voice_id", e.target.value)}
-                placeholder="Leave blank — agent chooses"
-                className="block w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-              />
-            </div>
+            <AvatarPicker form={form} onChange={onChange} hasHeyGen={credentials?.hasHeyGen ?? false} />
+            <VoicePicker form={form} onChange={onChange} hasHeyGen={credentials?.hasHeyGen ?? false} />
           </div>
         </>
       )}
@@ -776,7 +1027,7 @@ function Step2Content({
             <p className="mt-1 text-xs text-gray-400">Used to generate hashtags and social captions for your posts.</p>
           </div>
 
-          <HeyGenVideoSettings form={form} onChange={onChange} />
+          <HeyGenVideoSettings form={form} onChange={onChange} hasHeyGen={credentials?.hasHeyGen ?? false} />
         </>
       )}
 
