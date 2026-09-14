@@ -54,16 +54,20 @@ export async function storeSecret(
 /**
  * Deletes a secret from Supabase Vault by its UUID.
  *
+ * Uses the `vault_delete_secret` RPC rather than querying the `vault` schema
+ * directly — PostgREST does not expose the `vault` schema via the API, so a
+ * direct `.schema('vault').from('secrets').delete()` call always fails with
+ * "Invalid schema: vault". The RPC wrapper is SECURITY DEFINER and reaches
+ * `vault.secrets` from inside a plpgsql function instead.
+ *
  * @param vaultSecretId - UUID of the vault.secrets row to delete
  */
 export async function deleteSecret(vaultSecretId: string): Promise<void> {
   const supabase = createSupabaseAdminClient();
 
-  const { error } = await supabase
-    .schema('vault')
-    .from('secrets')
-    .delete()
-    .eq('id', vaultSecretId);
+  const { error } = await supabase.rpc('vault_delete_secret', {
+    secret_id: vaultSecretId,
+  });
 
   if (error) {
     throw new Error(`Failed to delete vault secret ${vaultSecretId}: ${error.message}`);
