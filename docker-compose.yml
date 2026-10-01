@@ -114,6 +114,12 @@ services:
     image: n8nio/n8n:1.48.0
     container_name: n8n
     restart: unless-stopped
+    # No port mapping here by default — n8n is intentionally not reachable
+    # from the host or public internet; only the api container (sharing the
+    # `internal` network) calls it. To access the n8n GUI directly (e.g. for
+    # one-time API-key creation or workflow import), temporarily add:
+    #   ports: ["127.0.0.1:5678:5678"]
+    # then SSH-tunnel to the VPS's loopback and remove the mapping afterward.
     env_file:
       - .env
     environment:
