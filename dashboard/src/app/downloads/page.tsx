@@ -10,27 +10,27 @@ export const metadata: Metadata = {
 /**
  * Downloads page — publicly accessible, no auth required.
  *
- * Lists downloadable software files hosted in a public Supabase Storage
- * bucket. To add or update a file:
- *   1. Upload the .exe to the Supabase Storage bucket "downloads" (public).
- *   2. Copy its public URL (Supabase Dashboard → Storage → downloads →
- *      click the file → "Get URL").
- *   3. Add/update an entry in the DOWNLOADS array below.
+ * Lists downloadable software files served directly from the VPS by Caddy
+ * (see the `/files/*` handle block in the Caddyfile) — NOT a third-party
+ * storage bucket. The one.com VPS plan this runs on includes unlimited
+ * data traffic, so there's no egress billing or per-file size cap to
+ * worry about the way there would be with a hosted storage service.
  *
- * See the project README or ask the team for the full setup walkthrough —
- * summarized here as a code comment so it stays next to what it documents:
+ * To add or update a file:
+ *   1. Copy the .exe into the `static-downloads/` directory at the repo
+ *      root on the VPS (e.g. `scp yourfile.exe administrator@<vps>:
+ *      /opt/autoflow/static-downloads/`). No rebuild or redeploy needed —
+ *      Caddy serves whatever is in that directory immediately.
+ *   2. Add/update an entry in the DOWNLOADS array below with
+ *      url: "https://automatesocials.tech/files/yourfile.exe"
+ *      (filename must match exactly, case-sensitive).
+ *   3. Commit + redeploy the dashboard so the new entry shows on the page.
  *
- *   - Create a bucket named "downloads" in Supabase Dashboard → Storage.
- *   - Mark it PUBLIC when creating it (or toggle "Public bucket" after).
- *     A public bucket serves files over a stable CDN URL with no auth
- *     required — appropriate for software downloads, not for private user
- *     data (which should stay in a private bucket / signed URLs instead).
- *   - Upload each .exe directly through the dashboard, or via the
- *     Supabase CLI / JS client from a build/release script.
- *   - Supabase's free tier includes 1 GB of storage and 2 GB of monthly
- *     egress bandwidth — enough for a handful of installer-sized files at
- *     light-to-moderate traffic. Monitor usage in Dashboard → Storage if
- *     files are large or downloads become frequent.
+ * Download counts (not shown publicly, informational only): Caddy logs
+ * every request to /files/* to its own dedicated access log. Run
+ * `scripts/count-downloads.sh` on the VPS any time to see a per-file tally
+ * — see that script's header comment for exact usage. No database, admin
+ * UI, or analytics service involved.
  */
 
 interface DownloadItem {
@@ -41,16 +41,16 @@ interface DownloadItem {
   url: string;
 }
 
-// Update this list whenever a new build is published.
+// Update this list whenever a new build is published. The filename in each
+// url must exactly match a file placed in static-downloads/ on the VPS.
 const DOWNLOADS: DownloadItem[] = [
-  // Example entry — replace with your real file's public Supabase Storage
-  // URL once uploaded:
+  // Example entry — replace once a real file is uploaded:
   // {
   //   name: "AutomateSocials Companion App",
   //   description: "Desktop helper for local video preview and upload.",
   //   version: "1.0.0",
   //   sizeLabel: "42 MB",
-  //   url: "https://sqfechtihroodkmncxpc.supabase.co/storage/v1/object/public/downloads/companion-app-1.0.0.exe",
+  //   url: "https://automatesocials.tech/files/companion-app-1.0.0.exe",
   // },
 ];
 
@@ -106,8 +106,8 @@ export default function DownloadsPage() {
       )}
 
       <p className="mt-10 text-xs text-gray-400">
-        Downloaded files are served from our storage provider. Always verify
-        the publisher of any software before running it on your machine.
+        Always verify the publisher of any software before running it on your
+        machine.
       </p>
 
       <footer className="mt-12 border-t border-gray-200 pt-6 text-xs text-gray-400">

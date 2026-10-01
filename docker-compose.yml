@@ -31,6 +31,9 @@ volumes:
     # avoids re-issuing/rate-limiting against Let's Encrypt on every restart)
   caddy_config:
     # Persists Caddy's runtime config state (production only)
+  caddy_logs:
+    # Persists Caddy's access logs, including downloads-access.log used by
+    # scripts/count-downloads.sh (production only)
 
 services:
 

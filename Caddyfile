@@ -1,5 +1,32 @@
 automatesocials.tech {
 
+    # Dedicated named logger for /files/* downloads — kept separate from the
+    # main access log (below) via log_name + no_hostname (per Caddy's own
+    # documented pattern for per-path logging:
+    # caddyserver.com/docs/caddyfile/directives/log_name), so download
+    # counts can be tallied later with scripts/count-downloads.sh without
+    # parsing/filtering the main site's full access log.
+    log downloads_log {
+        output file /var/log/caddy/downloads-access.log {
+            roll_size 10MiB
+            roll_keep 10
+        }
+        format json
+        no_hostname
+    }
+
+    # ── Downloads (/files/* → static .exe files from the host) ─────────────
+    # Served directly by Caddy, not routed through Next.js/Fastify — files
+    # live on the VPS's own disk (unlimited data traffic on this plan, see
+    # the dashboard's /downloads page for the matching upload instructions)
+    # rather than a third-party storage bucket with metered egress.
+    handle /files/* {
+        log_name downloads_log
+        root * /srv/downloads
+        uri strip_prefix /files
+        file_server
+    }
+
     # ── API routes (/api/* → Fastify on port 3001) ─────────────────────────
     handle /api/* {
         uri strip_prefix /api

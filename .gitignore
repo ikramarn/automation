@@ -75,3 +75,9 @@ nginx/certs/
 *.key
 *.crt
 *.p12
+
+# ── Downloadable binaries (managed on host, not in repo) ──────────────────────
+# .exe files served by Caddy at /files/* — uploaded directly to the VPS, never
+# committed. See dashboard/src/app/downloads/page.tsx for how to add one.
+static-downloads/*
+!static-downloads/.gitkeep

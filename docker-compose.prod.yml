@@ -76,6 +76,13 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+      # Static files served at /files/* (see Caddyfile) — upload/update .exe
+      # files by placing them directly in this host directory, no rebuild
+      # or redeploy needed. Download access is logged separately to
+      # caddy_logs (see downloads-access.log) so counts can be tallied
+      # on demand with scripts/count-downloads.sh.
+      - ./static-downloads:/srv/downloads:ro
+      - caddy_logs:/var/log/caddy
     networks:
       - public
     depends_on:
