@@ -1,8 +1,9 @@
 #!/bin/bash
 # ── VPS Initial Setup Script ──────────────────────────────────────────────────
 #
-# Run once on a fresh Hostinger KVM 2 Ubuntu 22.04 VPS.
-# Usage: bash vps-setup.sh
+# Run once on a fresh Ubuntu 26.04 VPS (one.com Cloud or similar), as a
+# sudo-enabled non-root user (e.g. "administrator").
+# Usage: sudo bash vps-setup.sh
 #
 # What this does:
 #   1. Updates system packages
@@ -14,15 +15,26 @@
 
 set -euo pipefail
 
+if [ "$(id -u)" -ne 0 ]; then
+    echo "This script must be run with sudo (sudo bash vps-setup.sh)." >&2
+    exit 1
+fi
+
+# The invoking non-root user (via sudo) — falls back to "administrator" if run
+# as a true root login (e.g. some older VPS images). This user gets added to
+# the docker group so you can run docker without sudo after re-login.
+INVOKING_USER="${SUDO_USER:-administrator}"
+
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  AutoFlow AI — VPS Setup"
+echo "  Invoking user: ${INVOKING_USER}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # ── 1. System update ──────────────────────────────────────────────────────────
 echo "[1/6] Updating system packages..."
 apt-get update -qq
 apt-get upgrade -y -qq
-apt-get install -y -qq curl git ufw
+apt-get install -y -qq curl git ufw gnupg
 
 # ── 2. Docker ─────────────────────────────────────────────────────────────────
 echo "[2/6] Installing Docker..."
@@ -32,26 +44,24 @@ if ! command -v docker &>/dev/null; then
     systemctl start docker
 fi
 
-# Add current user to docker group
-usermod -aG docker "$USER" || true
+# Add the invoking user to the docker group (effective after next login)
+usermod -aG docker "$INVOKING_USER" || true
 
 # ── 3. Caddy ──────────────────────────────────────────────────────────────────
-echo "[3/6] Installing Caddy..."
-if ! command -v caddy &>/dev/null; then
-    apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-        | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-        | tee /etc/apt/sources.list.d/caddy-stable.list
-    apt-get update -qq
-    apt-get install -y -qq caddy
-fi
+# NOTE: Caddy runs as a DOCKER CONTAINER (see docker-compose.prod.yml's
+# `caddy` service), not as a native systemd package. This is deliberate:
+# Caddy must resolve api:3001 / nextjs:3000 as Docker-network service names
+# (see ./Caddyfile), which only works from inside the same Docker network —
+# a host-level systemd Caddy process cannot reach those names at all.
+# This step is a no-op; kept only so firewall/directory setup below still
+# runs standalone. Do NOT `apt-get install caddy` on this box.
+echo "[3/6] Caddy will run as a Docker container (see docker-compose.prod.yml) — skipping native install."
 
 # ── 4. App directory structure ────────────────────────────────────────────────
 echo "[4/6] Creating app directory..."
 mkdir -p /opt/autoflow
 mkdir -p /opt/autoflow/logs
-chown -R "$USER:$USER" /opt/autoflow
+chown -R "$INVOKING_USER:$INVOKING_USER" /opt/autoflow
 
 # ── 5. Firewall ───────────────────────────────────────────────────────────────
 echo "[5/6] Configuring firewall..."
@@ -61,8 +71,8 @@ ufw default allow outgoing
 ufw allow ssh        # port 22
 ufw allow http       # port 80  (Caddy — redirects to HTTPS)
 ufw allow https      # port 443 (Caddy — main entry point)
-# Tailscale interface — allow all traffic from Tailscale network
-ufw allow in on tailscale0
+# Tailscale interface — allow all traffic from Tailscale network (if used)
+ufw allow in on tailscale0 2>/dev/null || true
 ufw --force enable
 echo "Firewall status:"
 ufw status
@@ -90,6 +100,7 @@ echo ""
 echo "  Next steps:"
 echo "  1. Add Jenkins SSH public key to /home/deploy/.ssh/authorized_keys"
 echo "  2. Copy your .env.prod file to /opt/autoflow/.env.prod"
-echo "  3. Set DOMAIN env var and start Caddy"
-echo "  4. Run: cd /opt/autoflow && docker compose up -d"
+echo "  3. Copy docker-compose.yml, docker-compose.prod.yml, Caddyfile to /opt/autoflow"
+echo "  4. Run: cd /opt/autoflow && docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod up -d"
+echo "  5. Log out and back in as ${INVOKING_USER} for docker group membership to take effect"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

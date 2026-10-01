@@ -1,9 +1,14 @@
 # ── Environment & Secrets ─────────────────────────────────────────────────────
 # NEVER commit actual env files — only .env.example is safe to commit
+# NOTE: .gitignore does NOT support inline trailing comments — a pattern like
+# ".env.prod  # comment" is matched LITERALLY (including the comment text),
+# so it silently matches nothing. Previously ".env.prod" had exactly this bug
+# and was never actually ignored. Keep each pattern on its own line, with any
+# explanation on the line above as a full-line comment.
 .env
 .env.local
 .env.*.local
-.env.prod           # Production secrets — must NEVER be committed
+.env.prod
 .env.staging
 
 # ── Node.js ───────────────────────────────────────────────────────────────────

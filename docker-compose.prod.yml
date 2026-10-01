@@ -60,3 +60,24 @@ services:
   nginx:
     profiles:
       - dev-only   # Never starts in prod — Caddy handles routing + SSL
+
+  # ── Caddy — Reverse Proxy + Automatic HTTPS (prod only) ────────────────────
+  # Resolves api:3001 / nextjs:3000 as Docker service names — must be on the
+  # same `public` network as those two services (defined in docker-compose.yml).
+  caddy:
+    image: caddy:2.11-alpine
+    container_name: caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3 (QUIC)
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - public
+    depends_on:
+      - api
+      - nextjs
