@@ -17,8 +17,8 @@ interface DownloadItem {
 
 const DOWNLOADS: DownloadItem[] = [
   {
-    name: "JazzyEngine — Facebook Automation & Engagement",
-    description: "Multi-profile desktop automation for natural Facebook newsfeed browsing, Reels watching, and reach scaling.",
+    name: "JazzyEngine — Desktop Automation & Engagement",
+    description: "Multi-profile desktop automation for natural newsfeed browsing, Reels watching, and reach scaling.",
     version: "1.0.0",
     sizeLabel: "129 MB (.exe)",
     url: "https://automatesocials.tech/files/JazzyEngine-Setup-1.0.0.exe",
@@ -33,7 +33,7 @@ export default function DownloadsPage() {
           href="/"
           className="text-sm text-indigo-600 hover:text-indigo-500 focus:outline-none focus:underline"
         >
-          ← Back to AI Video Automation
+          &larr; Back to AI Video Automation
         </Link>
       </nav>
 
@@ -45,8 +45,8 @@ export default function DownloadsPage() {
       </p>
 
       {DOWNLOADS.length === 0 ? (
-        <p className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-6 text-sm text-gray-500">
-          No downloads are available yet. Check back soon.
+        <p className="rounded-lg border border-dashed border-gray-300 p-8 text-center text-sm text-gray-400">
+          No downloads are currently available. Check back soon.
         </p>
       ) : (
         <ul className="space-y-4">
@@ -77,7 +77,7 @@ export default function DownloadsPage() {
       )}
 
       <div className="mt-8 rounded-lg border border-gray-200 bg-gray-50 p-4 text-xs text-gray-600">
-        <strong>💡 Note for Windows Users:</strong> If Windows SmartScreen or Smart App Control shows a warning, click <em>More info</em> → <em>Run anyway</em>, or ensure Smart App Control is set to Evaluation/Off.
+        <strong>💡 Note for Windows Users:</strong> If Windows SmartScreen or Smart App Control shows a warning, click <em>More info</em> &rarr; <em>Run anyway</em>, or ensure Smart App Control is set to Evaluation/Off.
       </div>
 
       <footer className="mt-12 border-t border-gray-200 pt-6 text-xs text-gray-400">

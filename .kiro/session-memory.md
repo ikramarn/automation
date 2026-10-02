@@ -1,6 +1,300 @@
 # Session Memory — AutomateSocials Video Pipeline Debugging
 
-Last updated: 2026-09-10 (session covering ~06:00–15:00 UTC)
+Last updated: 2026-09-15 (session covering ~2026-09-14 20:00 UTC – 2026-09-15 01:00 UTC)
+Previous session covered 2026-09-10 ~06:00–15:00 UTC — see "SESSION 2026-09-10" section
+below for that history. This file is cumulative; read top-down for the current state,
+scroll down for how we got here.
+
+## CURRENT STATE (as of 2026-09-15, read this first)
+
+**What's deployed and live right now:**
+- **VPS n8n workflow** (`2vFZUPrgs1oJauGd`, deployed directly via n8n REST API, no
+  Jenkins needed): all fixes through commit `c6a321c` are live. This includes the
+  wallet pre-flight check, the Social_Publisher video-source fix, the full v2→v3
+  HeyGen API migration for the classic path, and the voice-fallback + error-surfacing
+  fixes.
+- **API/backend** (`api/` — needs Jenkins): user ran a successful Jenkins pipeline
+  after commit `76cc213` was pushed, so the deployed API image includes: the JWT fix
+  for social OAuth connect (`2dc4262`), the HeyGen avatar/voice picker backend routes
+  (`a4c9ebe`), and the new `platform-audit-status` endpoint (`76cc213`). Confirm with
+  `docker exec api printenv | grep -i VERSION` or check image tag if picking this up
+  cold and something seems stale.
+- **Supabase**: `platform_audit_status.youtube.audit_approved = true` (applied via
+  `supabase db push`, migration `20260915000000_youtube_audit_approved.sql`).
+  tiktok/facebook/instagram remain at seeded `false` — user only uses YouTube.
+
+**Known-good user setup:** YouTube only (no TikTok/Facebook/Instagram), no Ayrshare
+account, fine with videos landing as `private` (unaudited Google Cloud API project
+forces this regardless of what visibility is requested — not something code controls).
+
+**Immediately unresolved / next to check:**
+1. User was about to re-test the `custom_script` pipeline after the voice-fallback +
+   error-surfacing fix (commit `c6a321c`) deployed. No confirmation yet whether it
+   actually succeeded end-to-end (video generated → Drive upload → YouTube publish).
+2. **Check the user's HeyGen wallet balance.** During root-cause verification for the
+   voice bug, a live reproduction call against `POST /v3/videos` unexpectedly
+   succeeded (rather than failing validation as intended) and started a real video
+   generation (`video_id 392e66491b77fef7b5cf9e4b9f622499`, avatar
+   `cb80702da06943d1b790db9c2dc4dc4c`). It was deleted via `DELETE /v3/videos/{id}`
+   within ~15 seconds, but deletion does not necessarily refund any credits already
+   charged. Balance was $2.50 as of the last confirmed check (2026-09-14, before this
+   incident) — could be lower now. Flag this to the user if not already discussed.
+3. `Cleanup` node still maps a `social_publish_status` of `'skipped'` to
+   `final_status: 'success'` — a run where nothing actually got published/uploaded can
+   still show as "Succeeded" in the dashboard. Identified, explained to user, **not
+   yet fixed** — not requested, don't do it unprompted.
+4. `PLATFORM_OPENAI_API_KEY` on the VPS is still the literal placeholder string
+   `REPLACE_WITH_OPENAI_KEY` (confirmed via `docker exec n8n printenv`). This breaks
+   the "fall back to platform OpenAI key" feature for any user without their own
+   OpenAI key. User's explicit instruction: **"ok leave it like that"** — do not fix
+   unless asked again. The affected user for this specific case needs their own
+   OpenAI key in Settings → Credentials.
+5. Google Drive / YouTube OAuth tokens are on the 7-day Testing-mode expiry cycle
+   (Google Cloud OAuth consent screen not published to production). User reconnected
+   both after the last expiry. Permanent fix is the user's action (publish the OAuth
+   consent screen in Google Cloud Console), not a code fix.
+
+## SESSION 2026-09-14/15 — chronological log
+
+Continuing directly from the 2026-09-10 session below. Video generation via HeyGen
+Video Agent (`content_source=agent`) was already confirmed working end-to-end at the
+start of this session. Focus shifted to: Drive/YouTube upload+publish, the dashboard
+avatar/voice picker, HeyGen engine selection, and a newly-found YouTube connect bug.
+
+1. **YouTube/TikTok/Facebook/Instagram "Connect" always failed with `{"error_code":
+   "unauthorized","message":"Invalid or expired token"}`.** Root cause:
+   `api/src/routes/credentials/social-oauth.ts`'s connect route called
+   `app.jwt.verify()` directly — a legacy HS256-only `@fastify/jwt` method — but
+   production Supabase signs tokens via JWKS-based asymmetric keys, verified through
+   `app.verifyJwt()` (the decorator from `plugins/jwt.ts`). Confirmed via live server
+   logs (`docker logs api | grep 'JWT:'` → `"JWT: using JWKS endpoint..."`), meaning
+   `app.jwt` was never even registered in production. Fixed by switching to
+   `app.verifyJwt()`. This one file/route serves all 4 platforms' connect flow, so the
+   fix covers all of them. **Commit `2dc4262`.** Verified: 711/711 tests passing
+   before this session's other changes, build clean, lint 0 errors.
+
+2. **Built the HeyGen avatar/voice picker.** New API routes `GET
+   /credentials/heygen/avatars` and `GET /credentials/heygen/voices`
+   (`api/src/routes/credentials/heygen-assets.ts`), dashboard replaced raw text-ID
+   inputs with thumbnail-grid `AvatarPicker`/`VoicePicker` components (with audio
+   preview and fallback to manual entry) in
+   `dashboard/src/app/(dashboard)/pipelines/new/page.tsx`. **Commit `a4c9ebe`**
+   (pushed in the prior session, deployed via Jenkins in this one).
+
+3. **HeyGen Video Agent wallet-balance pre-flight check.** Diagnosed a real
+   production failure (execution 41, "crypto" pipeline): session approved and started
+   rendering, then died with a bare `status: 'failed'` and zero error detail. Root
+   cause, confirmed via live API checks: HeyGen Video Agent bills a flat **$2.00/min**
+   of OUTPUT video from a prepaid USD wallet (`GET /v3/users/me`,
+   `billing_type: 'wallet'`) — the legacy v2 "remaining_quota" credits endpoint does
+   NOT reflect this wallet balance (v2 showed 150 remaining while the real v3 wallet
+   showed **$2.50**). HeyGen also documents duration variance up to 174% of the
+   prompted target, so a nominally-affordable render can still exceed the wallet
+   mid-render with no reported reason. Added `checkHeyGenWalletBalance()`: queries the
+   wallet before creating any session, applies the 174% overrun margin as a safety
+   threshold, fails OPEN if the check itself can't complete. Verified with 6 mock
+   scenarios including a direct regression of the real failure. **Commit `52b5169`**,
+   deployed directly to the live n8n workflow (no Jenkins needed for workflow JSON).
+
+4. **User pointed out (correctly) that I'd misattributed the failure to the
+   `avatar_iv` engine at first** — corrected: Video Agent doesn't accept an `engine`
+   parameter at all (confirmed via HeyGen's `POST /v3/video-agents` schema), so engine
+   choice is irrelevant to that specific failure. The wallet/duration-variance
+   explanation above is the confirmed one.
+
+5. **User asked about selecting avatar engines when HeyGen Video Agent (prompt-only)
+   is selected — confirmed not possible.** HeyGen's Video Agent API has no `engine`
+   field; it decides internally and always bills flat $2/min. This is a platform
+   limitation, not a gap in our UI. Separately, an engine picker (Avatar III/IV/V)
+   *did* already exist in the dashboard for the classic path
+   (`HeyGenVideoSettings` component), but was fully disconnected from the backend —
+   see #6.
+
+6. **User asked about the $1/min HeyGen rate — traced to Avatar III engine at
+   720p/1080p, classic path only.** This directly motivated the v2→v3 migration
+   (#8 below), since the $1/min tier requires actually sending `engine:
+   {type:'avatar_iii'}`, which the old v2 endpoint had no way to express.
+
+7. **Social_Publisher was reading video from the wrong field, and was fully dependent
+   on Drive succeeding first.** `const videoUrl = ctx.gdrive_link || ctx.r2_video_url
+   || null` — `r2_video_url` is never populated (R2 removed in the prior session),
+   and `gdrive_link` is Drive's `webViewLink`, which Google's own Drive API docs
+   confirm is a *browser viewer page*, not a downloadable file — fetching it returns
+   HTML, not video bytes. This also meant social publishing was skipped entirely
+   whenever Drive failed (confirmed via a real execution, id 40: Drive failed with an
+   expired-token 400, and Social_Publisher recorded `'skipped: no video'` for
+   YouTube despite the video having rendered successfully). Fixed: now reads
+   `ctx.heygen_video_url` directly — the same signed HeyGen CDN link Drive_Uploader
+   already uses — decoupling the two destinations. Verified with 4 mock scenarios
+   including a direct regression of execution 40. **Commit `6e03b56`.**
+
+8. **User clarified their real setup: YouTube only, no Ayrshare, fine with private
+   uploads.** This surfaced a second, previously-invisible bug: `Social_Publisher`
+   calls `GET /internal/platform-audit-status/:platform` to decide Ayrshare vs.
+   direct-API routing — but that endpoint **did not exist** anywhere in the backend.
+   Every call failed and silently defaulted to `audit_approved: false`, meaning
+   **every** publish attempt was being force-routed through Ayrshare regardless of
+   the `platform_audit_status` table's actual content — and the user has no Ayrshare
+   key, so this was a guaranteed second failure sitting right behind the first one.
+   Built the missing route (`api/src/routes/internal/platform-audit-status.ts`,
+   9 new tests, fails safe to `audit_approved:false` on any lookup error/unknown
+   platform), and applied a migration setting `platform_audit_status.youtube
+   .audit_approved = true` (tiktok/facebook/instagram left at seeded `false`).
+   **Commit `76cc213`**, deployed via the user's Jenkins run; migration applied
+   directly via `supabase db push` and verified against the live table.
+   **Important distinction documented for the user:** this internal flag is unrelated
+   to Google's own YouTube API compliance audit for the Cloud project — Google's
+   servers force any video from an unaudited project to `private` regardless of this
+   flag either way.
+
+9. **Real execution (43) failed with `Request failed with status code 400` on the
+   classic `custom_script` path.** Root cause: `submitHeyGenVideo()` was still calling
+   the legacy `POST /v2/video/generate` — which has no `engine` parameter at all — and
+   hardcoded `voice_id: ''` unconditionally in the request body. Confirmed via
+   HeyGen's error-codes docs that a script-driven video requires a real `voice_id`
+   unless `avatar_id` supplies a fallback — an empty string is not a valid "no
+   preference" value, it's malformed input. This was also why the dashboard's
+   existing engine picker had zero effect: v2 has no such field to send it to.
+   Migrated to `POST /v3/videos` (`type: 'avatar'`) and `GET /v3/videos/{video_id}`
+   for polling. Now actually forwards `heygen_engine`, `heygen_resolution`,
+   `heygen_aspect_ratio` (previously collected by the dashboard and silently
+   discarded), added a pre-flight engine/avatar compatibility check against
+   `supported_api_engines`. Verified with 6 mock scenarios including a direct
+   regression of execution 43's exact 400, plus re-ran the agent-path/wallet tests
+   against the same edited file to confirm no cross-contamination. **Commit
+   `c3e8a44`**, deployed directly to the live n8n workflow.
+
+10. **Follow-up real execution (44) STILL 400'd on the custom_script path, but with a
+    useless generic message** (`Request failed with status code 400`, no HeyGen
+    reason surfaced). Root-caused via a live reproduction of the exact failing
+    request directly against HeyGen's API (read-only/no-video-generated call): the
+    real reason was `"voice_id is required: this avatar has no default voice
+    configured."` This corrected a wrong assumption from fix #9 — omitting `voice_id`
+    entirely is NOT always safe; HeyGen's "falls back to the avatar's default voice"
+    behavior only applies when that avatar actually has a `default_voice_id`
+    configured on HeyGen's side, and this one (`cb80702da06943d1b790db9c2dc4dc4c`)
+    doesn't. Separately found and fixed why the error message was useless in the
+    first place: HeyGen's real error body is **nested** — `{"error":{"code":...,
+    "message":...}}` — but `parseV3ErrorBody()` was reading `data.code`/`data.message`
+    flat (always `undefined` on a real response), so every HeyGen validation error
+    fell through to a generic Axios message. Fixed both: voice resolution is now
+    user-choice → avatar's own `default_voice_id` (fetched via `GET
+    /v3/avatars/looks/{avatar_id}`) → a real fallback voice from `GET /v3/voices` if
+    neither exists (never omitted, never empty string); error parsing now reads the
+    correct nested shape. Verified with 4 new mock tests plus a full re-run of all
+    prior wallet/v3-migration tests against the same edited file (8/8 passed).
+    **Commit `c6a321c`**, deployed directly to the live n8n workflow.
+    **⚠️ Incident during verification:** the live reproduction call used to confirm
+    the fix (with a real fallback voice_id attached) unexpectedly returned `200 OK`
+    and started an actual HeyGen render instead of failing as intended — this was not
+    anticipated going in. Deleted the resulting video (`video_id
+    392e66491b77fef7b5cf9e4b9f622499`) via the API within ~15 seconds, but this likely
+    still consumed real HeyGen wallet credits that deletion does not refund. Flagged
+    transparently to the user; balance not re-verified after the incident — check
+    this if picking the session back up.
+
+### Key technical facts learned this session (don't rediscover these)
+
+- **HeyGen Video Agent (`POST /v3/video-agents`) has NO `engine` parameter.** Engine
+  selection (`avatar_iii`/`avatar_iv`/`avatar_v`) only exists on the classic
+  `POST /v3/videos` avatar-video endpoint. Video Agent always bills flat **$2.00/min**
+  of output regardless of internal engine choice; classic-path pricing is
+  **$1.00/min** for Avatar III at 720p/1080p, **$3–4/min** for Avatar IV/V (see
+  `help.heygen.com/en/articles/10060327-heygen-api-pricing-explained`).
+- **HeyGen's real wallet balance lives at `GET /v3/users/me`
+  (`billing_type: 'wallet'`, `wallet.remaining_balance`)** — NOT the legacy v2
+  `remaining_quota` endpoint, which can show a healthy number while the actual USD
+  wallet the Direct API bills against is nearly empty.
+- **HeyGen v3 error responses are nested:** `{"error": {"code": "...", "message":
+  "...", "param": "...", "doc_url": "..."}}` (confirmed via live reproduction, not
+  just docs). Any future error-parsing code must read `data.error.code` /
+  `data.error.message`, not flat fields.
+- **`voice_id` fallback on `POST /v3/videos` is conditional, not universal.**
+  Omitting it only works if the avatar has a `default_voice_id` configured
+  (`GET /v3/avatars/looks/{avatar_id}` — this field is documented but not always
+  populated). If absent, HeyGen rejects the request outright — a real, non-empty
+  `voice_id` must always be sent.
+- **`GET /v3/avatars/looks/{avatar_id}` returns `supported_api_engines` (array) and
+  `default_voice_id`** — used for pre-flight engine-compatibility validation and
+  voice fallback resolution respectively.
+- **Google Drive API's `webViewLink` is a browser viewer page, not a downloadable
+  file** (confirmed via `developers.google.com/workspace/drive/api/guides/
+  manage-downloads`) — never fetch it expecting raw bytes. Use the actual file's
+  binary source (in this pipeline, HeyGen's own CDN `video_url`) for any re-upload.
+- **YouTube Data API forces `private` visibility on all uploads from an unaudited
+  Google Cloud API project**, regardless of the requested `privacyStatus` — this is
+  Google-side enforcement, unrelated to this app's own `platform_audit_status`
+  routing flag (which only decides Ayrshare vs. direct-API, nothing about audit
+  status itself).
+- **Ayrshare** is a third-party unified social-posting API; this pipeline uses it
+  only as a fallback path for platforms not yet through this app's own audit-status
+  flag. Not used by the current user at all (no account/key).
+- **Deployment mechanics, reconfirmed:** n8n workflow JSON changes deploy instantly
+  via n8n's own REST API (`PUT /api/v1/workflows/{id}`) — no Jenkins. `api/` or
+  `dashboard/` source changes need a full Jenkins run. Supabase migrations apply via
+  `npx supabase db push` (already linked to project `sqfechtihroodkmncxpc`) — also no
+  Jenkins.
+- **SSH/exec quoting reminder (reconfirmed, cost real time this session):** never
+  attempt inline `docker exec ... node -e "..."` through nested SSH from PowerShell —
+  quote-escaping across three shell layers reliably breaks. Always write the script
+  to a local file, `scp` to `/tmp/`, `docker cp` into the target container, then
+  `docker exec <container> node /tmp/<file>`. Note the `api` container runs ESM
+  (`"type":"module"` in its `package.json`) — use `.cjs` extension for any
+  `require()`-based one-off script run inside it, not `.js`.
+- **HeyGen API responses over SSH via `wget` inside containers come back UTF-16
+  encoded** when redirected to a local file through this SSH pipeline — decode with
+  `raw.decode('utf-16')` before `json.loads()`, plain UTF-8 read fails with
+  `UnicodeDecodeError`.
+
+### Decisions made this session
+
+- Kept `mode: 'chat'` for HeyGen Video Agent (user asked directly whether this had
+  been reverted to `'generate'` — confirmed no, verified against both the local repo
+  file and the live deployed n8n workflow).
+- Did not implement a code-side avatar-engine picker for the Video Agent path — no
+  API parameter exists for it, confirmed via HeyGen's official schema, not an
+  oversight to fix.
+- Did not build out real Ayrshare integration — user confirmed they don't use it;
+  routed YouTube to `audit_approved=true` (direct API) instead, which matches their
+  actual setup.
+- Left `PLATFORM_OPENAI_API_KEY` as an unconfigured placeholder on the VPS per
+  explicit user instruction ("leave it like that") rather than fixing the platform
+  fallback feature.
+- Did not fix `Cleanup`'s `'skipped'` → `'success'` status-mapping issue — flagged to
+  user as a known, separate issue; not yet requested.
+- Verified every n8n Code-node fix with a standalone Node.js mock test harness
+  (using `vm.Script`/`vm.createContext` to simulate the `$input`/`helpers` sandbox)
+  BEFORE deploying to the live workflow each time — this pattern worked well and
+  caught real bugs (e.g. the engine/avatar-mismatch case) before they could recur in
+  production. Continue this pattern for any further n8n Code node changes.
+
+## User preferences observed this session
+
+- Corrects agent mistakes precisely and expects them acknowledged directly, not
+  smoothed over — e.g. "check this, i think you are wrong" (correctly identified a
+  misattributed root cause), "what is ayrshare?" (asked before accepting a
+  routing-behavior claim at face value).
+- Prefers a short plain-language explanation of what a fix will do and its
+  confidence level BEFORE code changes are made ("give another brief explanation
+  before you code"), especially for anything touching money/credits or production
+  behavior.
+- Explicitly OK with taking the "good enough" path when it matches their actual
+  requirements (private YouTube uploads, no Ayrshare) rather than chasing full
+  platform-audit compliance — don't over-engineer past what they've asked for.
+- Still sensitive to real HeyGen credit consumption from verification/test calls —
+  this session's accidental real-generation incident during root-cause verification
+  is a genuine miss against that standing preference and should inform more caution
+  before running any HeyGen POST that could plausibly succeed, not just ones
+  expected to fail.
+- Wants Jenkins vs. direct-n8n-deploy distinction reconfirmed for every change,
+  same as prior session.
+- Runs real pipeline executions promptly after each fix and reports back with
+  dashboard screenshots — the fastest way to get ground truth in this project is to
+  ask for one more real test rather than speculate.
+
+---
+
+# SESSION 2026-09-10
 
 ## Goal
 Get the AutomateSocials video automation pipeline (VPS 76.13.254.137) working
