@@ -47,6 +47,12 @@ export default async function RootPage() {
         </div>
         <div className="flex items-center gap-3">
           <Link
+            href="/downloads"
+            className="rounded-lg px-4 py-2 text-sm font-medium text-gray-300 transition-colors hover:text-white"
+          >
+            Downloads
+          </Link>
+          <Link
             href="/login"
             className="rounded-lg px-4 py-2 text-sm font-medium text-gray-300 transition-colors hover:text-white"
           >
@@ -425,6 +431,8 @@ export default async function RootPage() {
       <footer className="relative z-10 border-t border-white/5 py-8 text-center">
         <p className="text-sm text-gray-500">
           © {new Date().getFullYear()} AutoFlow AI · Built for creators who move fast ·{" "}
+          <Link href="/downloads" className="transition-colors hover:text-gray-300">Downloads</Link>
+          {" · "}
           <Link href="/privacy" className="transition-colors hover:text-gray-300">Privacy</Link>
           {" · "}
           <Link href="/terms" className="transition-colors hover:text-gray-300">Terms</Link>

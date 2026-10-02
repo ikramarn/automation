@@ -30,6 +30,16 @@ const NAV_ITEMS = [
       </svg>
     ),
   },
+  {
+    href: "/downloads",
+    label: "Downloads",
+    icon: (
+      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+          d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5 7.5 12M12 16.5V3" />
+      </svg>
+    ),
+  },
 ];
 
 export default function DashboardNav() {
