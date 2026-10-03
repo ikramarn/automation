@@ -1,4 +1,4 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 
@@ -42,7 +42,7 @@ export default async function RootPage() {
             <div className="h-3 w-3 rounded-full bg-gradient-to-br from-purple-400 to-blue-400" />
           </div>
           <span className="text-lg font-bold tracking-tight text-white">
-            AutoFlow <span className="text-purple-400">AI</span>
+            AutomateSocials <span className="text-purple-400">AI</span>
           </span>
         </div>
         <div className="flex items-center gap-3">
@@ -265,7 +265,7 @@ export default async function RootPage() {
             {
               icon: "⏰",
               title: "Cron Scheduling",
-              desc: "Set your pipeline to run daily, weekly, or at any custom interval. AutoFlow handles the rest while you focus on growth.",
+              desc: "Set your pipeline to run daily, weekly, or at any custom interval. AutomateSocials handles the rest while you focus on growth.",
               color: "border-emerald-500/20 hover:border-emerald-500/50",
               glow: "group-hover:bg-emerald-500/5",
             },
@@ -314,7 +314,7 @@ export default async function RootPage() {
             {
               step: "03",
               title: "Enable and forget",
-              desc: "Flip the switch. AutoFlow runs on autopilot — creating, uploading, and publishing while you focus on strategy.",
+              desc: "Flip the switch. AutomateSocials runs on autopilot — creating, uploading, and publishing while you focus on strategy.",
               color: "text-emerald-400 border-emerald-500/30",
             },
           ].map((step, i) => (
@@ -430,7 +430,7 @@ export default async function RootPage() {
       {/* ── Footer ───────────────────────────────────────────────────────── */}
       <footer className="relative z-10 border-t border-white/5 py-8 text-center">
         <p className="text-sm text-gray-500">
-          © {new Date().getFullYear()} AutoFlow AI · Built for creators who move fast ·{" "}
+          © {new Date().getFullYear()} AutomateSocials AI · Built for creators who move fast ·{" "}
           <Link href="/downloads" className="transition-colors hover:text-gray-300">Downloads</Link>
           {" · "}
           <Link href="/privacy" className="transition-colors hover:text-gray-300">Privacy</Link>
